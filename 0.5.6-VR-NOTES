@@ -1,0 +1,7 @@
+3D/VR changes for 0.5.6:
+[ ] add support for attaching the adafruit IMU to any limb
+    as options to the VR bridge
+[ ] add glTF like packing format in shmif (vobj)
+[ ] move openCTM to decode
+[ ] have 3dbase use _decode for model decoding
+[ ] add assimp or glTF support for loading
