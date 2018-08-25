@@ -1,0 +1,21 @@
+TUI and related projects:
+
+[ ] Create a tui-lua based viewer of the crash dump format
+    that allows navigation (and later, upload-share-detect)
+		Make notes / keep track of API use issues for future
+		improvements.
+
+[ ] Document the tui-lua bindings
+
+[ ] Add an annotation mode for the copy-window
+
+[ ] Add tablet- support for selection and copy-window
+
+The BIG item is reworking rendering to push it into the
+main arcan process so that glyph caches, gpu packing
+buffers etc. can be shared. Thus, this ties it to the
+shmif-text buffer format (though the commit here will
+be driving the version).
+
+Rip out the rendering and ttf- dependency from the tui
+libraries themselves.
