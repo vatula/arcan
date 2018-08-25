@@ -1,0 +1,23 @@
+Planned: Lua changes for 0.5.6
+--------
+
+[ ] reset_image_transform, instant_image_transform should be able to take
+    an optional argument for which pipeline to reset (move, scale, ...)
+
+[ ] cleanup arcan_lwa LUA bindings, add a real entrypoint that takes over
+    the AUTORES like entrypoint and handle more events
+
+[ ] add an asynch- callback based approach to the glob call
+
+[ ] valid_vid should be able to test for rendertarget
+
+[ ] open_nonblock, the read and write operations should have
+    a version with a closure to trigger when the operation has
+		finished successfully or when there is poll-data
+
+[ ] extend the builtin mouse.lua to have a version which supports a
+    context based approach for supporting multiple cursors / devices
+
+[ ] build an 'alt' script that exposes serialization of most builtin
+    functions (not all are reasonable, particularly per-pixel access)
+		over the socket API
