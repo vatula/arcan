@@ -1,0 +1,6 @@
+Wayland changes for 0.5.6:
+
+[ ] the popup-surface dismiss crash bug on gtk
+[ ] finish dma_buf protocol
+[ ] finish viewporter protocol
+[ ] finish data-device
