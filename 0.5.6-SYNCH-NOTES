@@ -1,0 +1,8 @@
+Improvements to the platform/conductor for 0.5.6:
+
+[ ] Reset-GPU working for two-in-one slot (egl-dri)
+[ ] Extend Conductor with a thread monitor for resize-ack
+[ ] Add Affinity tracking (GPU- presence) to vstore
+[ ] Allow a priority-load for processing to let a specific
+    client delay composition and synch to hit the 'falling'
+		edge.
