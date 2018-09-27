@@ -1,0 +1,8 @@
+Notes / todo for frameserver/decode and frameserver/encode:
+
+[ ] Decode needs to synch to the features of VLC4:
+    [ ] GL- based context setup if shmifext_setup works
+
+[ ] Encode needs va-api support
+    [ ] Same as with shmifext_support but in the other
+		    direction
