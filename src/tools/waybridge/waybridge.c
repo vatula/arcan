@@ -156,6 +156,14 @@ static struct {
 	bool defer_release;
 
 /*
+ * needed to communicate window management events in the xwayland space, to
+ * pair compositor surfaces with xwayland- originating ones and so on. On-
+ * demand launch of the arcan-xwayland / arcan-xwayland-wm is found in
+ * wlimpl/xwl.c
+ */
+	bool use_xwayland;
+
+/*
  * accepted trace level
  */
 	int trace_log;

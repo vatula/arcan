@@ -1,5 +1,6 @@
 Wayland changes for 0.5.6:
 
+[ ] basic xwayland window manager
 [ ] the popup-surface dismiss crash bug on gtk
 [ ] finish dma_buf protocol
 [ ] finish viewporter protocol

@@ -257,7 +257,11 @@ static void surf_commit(struct wl_client* cl, struct wl_resource* res)
 			}
 			trace(TRACE_SURF, "cursor updated");
 		}
-		else {
+/* in general, a surface without a role means that the client is in the wrong
+ * OR that there is a rootless Xwayland surface going - for the latter, we'd
+ * like to figure out if this is correct or not - so wrap around a query
+ * function */
+		else if (!xwl_pair_surface(surf, res)){
 			trace(TRACE_SURF, "UAF or unknown surface (tag: %s)", surf->tracetag);
 			return;
 		}

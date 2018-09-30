@@ -88,7 +88,7 @@ Notes and Issues
 2. Initial Control connection - this one should be deprecated and removed
    in favor of getting it from the client connection when it is created, the
    current form is a remnant from before the -exec refactor.
-   
+
 3. Dynamic resizes are a bit edgy due to how differently this stage is handled
    in arcan and the 'idea' in Wayland. This will be fixed when the 'conductor'
    refactoring in arcan finishes.
@@ -120,18 +120,27 @@ separately in the [arcan wiki](https://github.com/letoram/arcan/wiki/wayland).
 
 XWayland
 ====
+There are two ways of getting X support for Arcan. One is via the custom
+arcan backend to the xserver that is part of the XArcan setup. The other
+is by using XWayland, both has their respective tradeoffs.
 
-XWayland support is currently omitted for two reasons. One is that the Xarcan
-approach is more efficient and blends better with the current arcan WMs
-(durden/prio) due to the whole 'self contained' thing, along with the need to
-have sharing-interception and not be explicitly dependent on wayland for X
-support.
+XWayland can be used in two modes, rootless and redirected. The redirected one
+works 'transparently' but requires the Wayland side to implement a window
+manager. Weston et. al does this by pulling in all of xcb etc. into the
+compositor itself. This approach is not used here due to the poor separation
+that encourages.
 
-The other is that for XWayland support, one must write an entire window manager
-(or import the one from weston or wlc, neither work flawlessly). Based on the
-'Why isn't Xwayland just a Wayland Client' post (wayland-devel, 2017-sept.) it
-seems like there's a chance we get patches that makes the special xwayland path
-unecessary and thus it is better to wait and see.
+Here, the wm is built as a separate binary, arcan-xwayland-wm. It is in an
+early state, and will have a variant that supports the durden control socket
+for communicating events, and one that works transparently from the arcan-
+wayland bridge.
+
+
+To experiment with the XWayland rootless support, try this setup:
+
+    arcan-wayland -exec Xwayland -rootless
+		DISPLAY=:0 arcan-xwayland-wm
+		DISPLAY=:0 xterm
 
 BUGS
 ===
@@ -151,7 +160,7 @@ TODO
 
 Rough estimate of planned changes and order:
 
-1. fork- mode
+1. Xwayland
 2. input fixes (regions, D to A mouse wheel, ...)
 3. data-device to clipboard
 4. enforce stronger error handling (not allow surfaces to switch roles etc.)
@@ -185,7 +194,7 @@ determine if we are compliant or not, because Wayland.
       - [p] zxdg-v6 to xdg-shell mapping
     - [i] Application-test suite and automated tests (SDL, QT, GTK, ...),
           seems that canonical attempts to tackle this
-    - [i] XWayland (WM parts)
+    - [p] XWayland (WM parts)
 - [ ] Milestone 3, funky things
   - [x] SHM to GL texture mapping
 	- [x] Single-exec launch mode (./arcan-wayland -exec gtk3-demo)
