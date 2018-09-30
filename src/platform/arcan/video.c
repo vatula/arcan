@@ -578,7 +578,7 @@ bool platform_video_map_handle(struct agp_vstore* dst, int64_t handle)
  * sync function generate bad statistics due to our two-stage synch
  * process
  */
-static void stub()
+static void lookup_stub()
 {
 }
 
@@ -614,7 +614,7 @@ void platform_video_synch(uint64_t tick_count, float fract,
 	}
 
 /* actually needed here or handle content will be broken */
-	glFlush();
+	agp_flush();
 
 	for (size_t i = 0; i < MAX_DISPLAYS; i++){
 		if (!(disp[i].dirty || (platform_nupd && disp[i].visible)))

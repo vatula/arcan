@@ -294,6 +294,9 @@ void agp_glinit_fenv(struct agp_fenv* dst,
 	dst->flush =
 		(void(*)(void))
 			lookup(tag, "glFlush");
+	dst->get_string =
+		(const char*(*)(GLenum))
+			lookup(tag, "glGetString");
 
 	dst->last_store_mode = GL_TEXTURE_2D;
 #undef lookup_opt

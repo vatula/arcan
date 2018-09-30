@@ -143,6 +143,7 @@ struct agp_fenv {
 	void (*polygon_mode) (GLenum, GLenum);
 	void (*line_width) (GLfloat);
 	void (*flush) ();
+	const char* (*get_string)(GLenum);
 
 /* state tracking */
 	int model_flags;

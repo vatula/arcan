@@ -3483,12 +3483,6 @@ const char* platform_video_capstr()
 	if (!stream)
 		return "platform/egl-dri capstr(), couldn't create memstream\n";
 
-	const char* vendor = (const char*) glGetString(GL_VENDOR);
-	const char* render = (const char*) glGetString(GL_RENDERER);
-	const char* version = (const char*) glGetString(GL_VERSION);
-	const char* shading = (const char*)glGetString(GL_SHADING_LANGUAGE_VERSION);
-	const char* exts = (const char*) glGetString(GL_EXTENSIONS);
-
 	const char* eglexts = "";
 	struct dispout* disp = get_display(0);
 
@@ -3498,10 +3492,10 @@ const char* platform_video_capstr()
 		dump_connectors(stream, disp->device, true);
 	}
 	fprintf(stream, "Video Platform (EGL-DRI)\n"
-			"Vendor: %s\nRenderer: %s\nGL Version: %s\n"
-			"GLSL Version: %s\n\n Extensions Supported: \n%s\n\n"
-			"EGL Extensions supported: \n%s\n\n",
-			vendor, render, version, shading, exts, eglexts);
+		"AGP Platform: \n%s\nEGL Extensions supported: \n%s\n\n",
+		agp_capstr(),
+		eglexts
+	);
 
 	fclose(stream);
 

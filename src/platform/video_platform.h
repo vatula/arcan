@@ -557,6 +557,12 @@ void agp_dropenv(struct agp_fenv*);
 void agp_init();
 
 /*
+ * Commit any pending draw commands to the underlying layer, assume
+ * related bound buffers etc. are in a synched state after this.
+ */
+void agp_flush();
+
+/*
  * lower 16 bits: index
  * upper 16 bits: group (default 0)
  */
@@ -847,8 +853,8 @@ enum rendertarget_mode {
  */
 struct agp_rendertarget;
 struct agp_fenv;
-struct agp_rendertarget* agp_setup_rendertarget(struct agp_vstore*,
-	enum rendertarget_mode mode);
+struct agp_rendertarget* agp_setup_rendertarget(
+	struct agp_vstore*, enum rendertarget_mode mode);
 
 /*
  * Break the opaqueness somewhat by exposing underlying handles, primarily for
@@ -1084,6 +1090,12 @@ const char* agp_shader_symtype(enum agp_shader_envts env);
  * Update the uniform value of the currently bound shader and uniform group
  */
 void agp_shader_forceunif(const char* label, enum shdrutype type, void* value);
+
+/*
+ * Return a human readable string describing the capabilities of the
+ * underlying graphics platform implementation.
+ */
+const char* agp_capstr();
 
 struct agp_render_options {
 	int line_width;

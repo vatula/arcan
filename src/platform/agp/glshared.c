@@ -1013,8 +1013,8 @@ static void toggle_debugstates(float* modelview)
 	}
 }
 
-void agp_rendertarget_ids(struct agp_rendertarget* rtgt, uintptr_t* tgt,
-	uintptr_t* col, uintptr_t* depth)
+void agp_rendertarget_ids(struct agp_rendertarget* rtgt,
+	uintptr_t* tgt, uintptr_t* col, uintptr_t* depth)
 {
 	if (tgt)
 		*tgt = rtgt->fbo;
@@ -1220,6 +1220,31 @@ static void setup_culling(struct agp_mesh_store* base, enum agp_mesh_flags fl)
 	}
 }
 
+const char* agp_capstr()
+{
+	struct agp_fenv* env = agp_env();
+
+	if (!env){
+		return "broken";
+	}
+
+	static char capbuf[512];
+
+	const char* vendor = (const char*) glGetString(GL_VENDOR);
+	const char* render = (const char*) glGetString(GL_RENDERER);
+	const char* version = (const char*) glGetString(GL_VERSION);
+	const char* shading = (const char*)glGetString(GL_SHADING_LANGUAGE_VERSION);
+	const char* exts = (const char*) glGetString(GL_EXTENSIONS);
+
+	snprintf(capbuf, 512,
+		"Vendor: %s\nRenderer: %s\nGL Version: %s\n"
+		"GLSL Version: %s\n\n Extensions Supported: \n%s\n\n",
+		vendor, render, version, shading, exts
+	);
+
+	return capbuf;
+}
+
 void agp_submit_mesh(struct agp_mesh_store* base, enum agp_mesh_flags fl)
 {
 /* make sure the current program actually uses the attributes from the mesh */
@@ -1343,6 +1368,12 @@ void agp_drop_mesh(struct agp_mesh_store* s)
 	}
 
 	memset(s, '\0', sizeof(struct agp_mesh_store));
+}
+
+void agp_flush()
+{
+	struct agp_fenv* env = agp_env();
+	env->flush();
 }
 
 void agp_save_output(size_t w, size_t h, av_pixel* dst, size_t dsz)
