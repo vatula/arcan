@@ -6,13 +6,8 @@
  * special considerations needed for pairing XWayland redirected windows
  * with wayland surfaces etc.
  */
-#include <stdlib.h>
-#include <stdio.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <stdarg.h>
+#include <arcan_shmif.h>
 #include <inttypes.h>
-#include <string.h>
 /* #include <X11/XCursor/XCursor.h> */
 #include <xcb/xcb.h>
 #include <xcb/composite.h>
@@ -48,7 +43,7 @@ static void scan_atoms()
 		xcb_intern_atom_reply_t* reply =
 			xcb_intern_atom_reply(dpy, cookie, &error);
 		if (reply && !error){
-
+			atoms[i] = reply->atom;
 		}
 		if (error){
 			fprintf(stderr,
@@ -94,32 +89,74 @@ static void create_window()
  * supporting wm, selection_owner, ... */
 }
 
-static void configure_request(xcb_configure_request_event_t* ev)
-{
-	/* ev->window carries the ID for us to lookup */
-}
-
 static void xcb_map_request(xcb_map_request_event_t* ev)
 {
-/* from map_request->window, we should be able to maintain
- * a mapping to a higher-level external object */
-
-/* extract window properties and translate to higher
- * level notes, like decorations, grab etc. */
+	fprintf(stdout, "kind=map:id=%"PRIu32"\n", ev->window);
+/* while the above could've made a round-trip to make sure we don't
+ * race with the wayland channel, the approach of detecting surface-
+ * type and checking seems to work ok (xwl.c) */
 	xcb_map_window(dpy, ev->window);
 }
 
 static void xcb_unmap_notify(xcb_unmap_notify_event_t* ev)
 {
-/* pair ev->window to our tracking structure
- * and extract the paired identifer so that we can unmap
-	xcb_unmap_window(dpy, frame_id);
-	*/
+	fprintf(stdout, "kind=unmap:id=%"PRIu32"\n", ev->window);
 }
 
 static void xcb_configure_request(xcb_configure_request_event_t* ev)
 {
-/* send the window configure */
+/* this needs to translate to _resize calls and to VIEWPORT hint events */
+	fprintf(stdout,
+		"kind=configure:id=%"PRIu32":x=%d:y=%d:w=%d:h=%d\n",
+		ev->window, ev->x, ev->y, ev->width, ev->height
+	);
+
+/* just ack the configure request for now, this should really be deferred
+ * until we receive the corresponding command from our parent but we lack
+ * that setup right now */
+	xcb_configure_window(dpy, ev->window,
+		XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+		XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
+		XCB_CONFIG_WINDOW_BORDER_WIDTH,
+		(uint32_t[]){ev->x, ev->y, ev->width, ev->height, 0}
+	);
+
+	xcb_set_input_focus(dpy,
+		XCB_INPUT_FOCUS_POINTER_ROOT, ev->window, XCB_CURRENT_TIME);
+/*
+ * weston does a bit more here,
+ *  see _read_properties (protocols, normal hints, wm state,
+ *  window type, name, pid, motif_wm_hints, wm_client_machine)
+ */
+}
+
+/* use stdin/popen/line based format to make debugging easier */
+static void process_wm_command()
+{
+	const char* arg = "";
+	struct arg_arr* args = arg_unpack(arg);
+	if (!args)
+		return;
+
+	const char* dst;
+	if (!arg_lookup(args, "kind", 0, &dst)){
+		fprintf(stderr, "malformed argument: %s, missing kind\n", arg);
+	}
+	if (strcmp(dst, "query") == 0){
+	}
+	else if (strcmp(dst, "maximized") == 0){
+	}
+	else if (strcmp(dst, "fullscreen") == 0){
+	}
+	else if (strcmp(dst, "configure") == 0){
+	}
+	else if (strcmp(dst, "destroy") == 0){
+	}
+	else if (strcmp(dst, "focus") == 0){
+	}
+
+cleanup:
+	arg_cleanup(args);
 }
 
 int main (int argc, char **argv)
@@ -128,13 +165,27 @@ int main (int argc, char **argv)
 	uint32_t values[3];
 
 	xcb_generic_event_t *ev;
-/*	xcb_get_geometry_reply_t *geom; */
 
-	dpy = xcb_connect(NULL, NULL);
-	if ((code = xcb_connection_has_error(dpy))){
-		fprintf(stderr, "Couldn't open display (%d)\n", code);
-		return EXIT_FAILURE;
+/* FIXME: this isn't right, we should be responsible for spawning
+ * XWayland with -rootless and pass the wm descriptors etc. here,
+ * so when that is added, remove the sleep etc.
+ */
+	if (!getenv("DISPLAY")){
+		putenv("DISPLAY=:0");
 	}
+
+	int counter = 10;
+	while (counter--){
+		dpy = xcb_connect(NULL, NULL);
+		if ((code = xcb_connection_has_error(dpy))){
+			fprintf(stderr, "Couldn't open display (%d)\n", code);
+			sleep(1);
+			continue;
+		}
+		break;
+	}
+	if (!counter)
+		return EXIT_FAILURE;
 
 	screen = xcb_setup_roots_iterator(xcb_get_setup(dpy)).data;
 	root = screen->root;
@@ -163,7 +214,6 @@ int main (int argc, char **argv)
 /* atom lookup:
  * moveresize, state, fullscreen, maximized vert, maximized horiz, active window
  */
-
 	while( (ev = xcb_wait_for_event(dpy)) ){
 		switch (ev->response_type & ~0x80) {
 		case XCB_BUTTON_PRESS:
@@ -196,7 +246,6 @@ int main (int argc, char **argv)
 			trace("reparent-notify");
 		break;
     case XCB_CONFIGURE_REQUEST:
-			trace("configure-request");
 			xcb_configure_request((xcb_configure_request_event_t*) ev);
 		break;
     case XCB_CONFIGURE_NOTIFY:

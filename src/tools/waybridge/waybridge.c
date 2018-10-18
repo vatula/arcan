@@ -186,7 +186,8 @@ enum trace_levels {
 	TRACE_SEAT    = 64,
 	TRACE_SURF    = 128,
 	TRACE_DRM     = 256,
-	TRACE_ALERT   = 512
+	TRACE_ALERT   = 512,
+	TRACE_XWL     = 1024
 };
 
 static inline void trace(int level, const char* msg, ...)
@@ -955,6 +956,8 @@ static int show_use(const char* msg, const char* arg)
 	fprintf(stdout, "%s%s", msg, arg ? arg : "");
 	fprintf(stdout, "\nUse: arcan-wayland [arguments]\n"
 "     arcan-wayland [arguments] -exec /path/to/bin arg1 arg2 ...\n\n"
+"Compatibility:\n"
+"\t-xwl              enable XWayland\n\n"
 "Security/Performance:\n"
 "\t-exec bin arg1 .. end of arg parsing, single-client mode (recommended)\n"
 "\t-shm-egl          pass shm- buffers as gl textures (recommended)\n"
@@ -984,7 +987,7 @@ static int show_use(const char* msg, const char* arg)
 "\t\t1   - allocations   2 - digital-input    4 - analog-input\n"
 "\t\t8   - shell        16 - region-events   32 - data device\n"
 "\t\t64  - seat        128 - surface        256 - drm\n"
-"\t\t512 - alert\n");
+"\t\t512 - alert      1024 - xwayland\n");
 	return EXIT_FAILURE;
 }
 
@@ -1038,11 +1041,18 @@ static void sigchld_handler()
 int main(int argc, char* argv[])
 {
 	struct arg_arr* aarr;
-	char def_prefix[] = "/tmp/awl_XXXXXX";
-	char* dtemp_prefix = def_prefix;
+	char* def_prefix = NULL;
 	int exit_code = EXIT_SUCCESS;
 	int force_width = 0;
 	int force_height = 0;
+
+	asprintf(&def_prefix, "%s/awl_XXXXXX",
+		getenv("XDG_RUNTIME_DIR") ? getenv("XDG_RUNTIME_DIR") : "/tmp");
+
+	if (!def_prefix)
+		return EXIT_FAILURE;
+
+	char* dtemp_prefix = def_prefix;
 
 /* for each wayland protocol or subprotocol supported, add a corresponding
  * field here, and then command-line argument passing to disable said protocol.
@@ -1074,7 +1084,9 @@ int main(int argc, char* argv[])
 
 	size_t arg_i = 1;
 	for (; arg_i < argc; arg_i++){
-		if (strcmp(argv[arg_i], "-shm-egl") == 0){
+		if (strcmp(argv[arg_i], "-xwl") == 0)
+			wl.use_xwayland = true;
+		else if (strcmp(argv[arg_i], "-shm-egl") == 0){
 			wl.default_accel_surface = 0;
 		}
 #ifdef ENABLE_SECCOMP
@@ -1357,9 +1369,11 @@ int main(int argc, char* argv[])
 		wl_event_loop_get_fd(wl_display_get_event_loop(wl.disp));
 	wl.groups[0].arcan->fd = wl.control.epipe;
 
-/*
- * chain-execute the single client that we want to handle
- */
+/* pipes from xwm etc, don't want that to kill us */
+	sigaction(SIGPIPE, &(struct sigaction){
+		.sa_handler = SIG_IGN, .sa_flags = 0}, 0);
+
+/* chain-execute the single client that we want to handle */
 	if (wl.exec_mode){
 		struct sigaction act = {
 			.sa_handler = &sigchld_handler
@@ -1398,7 +1412,10 @@ int main(int argc, char* argv[])
 		seccomp_load(flt);
 	}
 #endif
-	while(wl.alive && process_group(&wl.groups[0])){}
+	while(wl.alive && process_group(&wl.groups[0])){
+		if (wl.use_xwayland)
+			xwl_check_wm();
+	}
 
 cleanup:
 	if (wl.disp)
