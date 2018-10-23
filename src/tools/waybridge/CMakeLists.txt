@@ -99,7 +99,7 @@ SET(SOURCES
 add_executable(arcan-wayland ${SOURCES})
 add_executable(arcan-xwayland-wm xwlwm/xwlwm.c)
 target_link_libraries(arcan-wayland ${LIBRARIES})
-target_link_libraries(arcan-xwayland-wm xcb xcb-composite)
+target_link_libraries(arcan-xwayland-wm xcb xcb-composite ${ARCAN_SHMIF_LIBRARY} pthread)
 
 add_sanitizers(${PROJECT_NAME})
 install(TARGETS ${PROJECT_NAME} DESTINATION bin)

@@ -2,9 +2,10 @@
  * Copyright 2016-2018, Björn Ståhl
  * License: 3-Clause BSD, see COPYING file in arcan source repository.
  * Reference: https://github.com/letoram/arcan/wiki/wayland.md
- * Description: XWayland specific 'wnddow Manager' that deals with the
- * special considerations needed for pairing XWayland redirected windows
- * with wayland surfaces etc.
+ * Description: XWayland specific 'wnddow Manager' that deals with the special
+ * considerations needed for pairing XWayland redirected windows with wayland
+ * surfaces etc. Decoupled from the normal XWayland so that both sides can be
+ * sandboxed better and possibly used for a similar -rootless mode in Xarcan.
  */
 #include <arcan_shmif.h>
 #include <inttypes.h>
@@ -13,6 +14,7 @@
 #include <xcb/composite.h>
 #include <xcb/xfixes.h>
 #include <xcb/xcb_event.h>
+#include <pthread.h>
 
 static xcb_connection_t* dpy;
 static xcb_screen_t* screen;
@@ -22,6 +24,12 @@ static xcb_colormap_t colormap;
 static xcb_visualid_t visual;
 
 #include "atoms.h"
+
+/*
+ * struct window, malloc, set id, HASH_ADD_INT(windows, id, new)
+ * HASH_FIND_INT( users, &id, outptr)
+ * HASH_DEL(windows, outptr)
+ */
 
 static inline void trace(const char* msg, ...)
 {
@@ -89,13 +97,82 @@ static void create_window()
  * supporting wm, selection_owner, ... */
 }
 
+static bool has_atom(xcb_get_property_reply_t* prop, xcb_atom_t atom)
+{
+	if (prop == NULL || xcb_get_property_value_length(prop) == 0)
+		return false;
+
+	xcb_atom_t *atoms;
+	if ((atoms = xcb_get_property_value(prop)) == NULL)
+		return false;
+
+	size_t count = xcb_get_property_value_length(prop) / (prop->format / 8);
+	for (size_t i = 0; i < count; i++){
+	if (atoms[i] == atom)
+			return true;
+	}
+
+	return false;
+}
+
 static void xcb_map_request(xcb_map_request_event_t* ev)
 {
-	fprintf(stdout, "kind=map:id=%"PRIu32"\n", ev->window);
 /* while the above could've made a round-trip to make sure we don't
  * race with the wayland channel, the approach of detecting surface-
  * type and checking seems to work ok (xwl.c) */
 	xcb_map_window(dpy, ev->window);
+
+/*
+ * metainformation about the window to better select a type and behavior.
+ *
+ * _NET_WM_WINDOW_TYPE replaces MOTIF_WM_HINTS so we much prefer that as it
+ * maps to the segment type.
+ */
+	xcb_get_property_cookie_t cookie = xcb_get_property(
+		dpy, 0, ev->window, atoms[NET_WM_WINDOW_TYPE], XCB_ATOM_ANY, 0, 2048);
+	xcb_get_property_reply_t* reply = xcb_get_property_reply(dpy, cookie, NULL);
+
+/* couldn't find out more, just map it and hope */
+	bool popup = false, dnd = false, menu = false, notification = false;
+	bool splash = false, tooltip = false, utility = false, dropdown = false;
+
+	fprintf(stdout, "kind=map:id=%"PRIu32, ev->window);
+	if (reply){
+		popup = has_atom(reply, NET_WM_WINDOW_TYPE_POPUP_MENU);
+		dnd = has_atom(reply, NET_WM_WINDOW_TYPE_DND);
+		dropdown = has_atom(reply, NET_WM_WINDOW_TYPE_DROPDOWN_MENU);
+		menu  = has_atom(reply, NET_WM_WINDOW_TYPE_MENU);
+		notification = has_atom(reply, NET_WM_WINDOW_TYPE_NOTIFICATION);
+		splash = has_atom(reply, NET_WM_WINDOW_TYPE_SPLASH);
+		tooltip = has_atom(reply, NET_WM_WINDOW_TYPE_TOOLTIP);
+		utility = has_atom(reply, NET_WM_WINDOW_TYPE_UTILITY);
+		free(reply);
+
+		if (popup || dnd || dropdown || menu ||
+			notification || splash || tooltip || utility){
+			fprintf(stdout, ":type=subsurface");
+		}
+	}
+
+	fprintf(stdout, "\n");
+/*
+ * a bunch of translation heuristics here:
+ *  transient_for ? convert to parent- relative coordinates unless input
+ *  if input, set toplevel and viewport parent-
+ *
+ * do we have a map request coordinate?
+ */
+
+/*
+ * WM_HINTS :
+ *  flags as feature bitmap
+ *  input, initial_state, pixmap, window, position, mask, group,
+ *  message, urgency
+ */
+
+/* XCB_ATOM_WM_TRANSIENT_FOR
+ *  flag as subsurface and use another window as reference
+ */
 }
 
 static void xcb_unmap_notify(xcb_unmap_notify_event_t* ev)
@@ -103,6 +180,25 @@ static void xcb_unmap_notify(xcb_unmap_notify_event_t* ev)
 	fprintf(stdout, "kind=unmap:id=%"PRIu32"\n", ev->window);
 }
 
+static void xcb_client_message(xcb_client_message_event_t* ev)
+{
+/*
+ * switch type against resolved atoms:
+ * WL_SURFACE_ID : gives wayland surface id
+ *  NET_WM_STATE : (format field == 32), gives:
+ *                 modal, fullscreen, maximized_vert, maximized_horiz
+ * NET_ACTIVE_WINDOW: set active window on root
+ * NET_WM_MOVERESIZE: set edges for move-resize window
+ * PROTOCOLS: set ping-pong
+ */
+	if (ev->type == atoms[WL_SURFACE_ID]){
+		trace("wl-surface:%"PRIu32, ev->data.data32[0]);
+		fprintf(stdout,
+			"kind=surface:id=%"PRIu32":surface_id=%"PRIu32"\n",
+			ev->window, ev->data.data32[0]
+		);
+	}
+}
 static void xcb_configure_request(xcb_configure_request_event_t* ev)
 {
 /* this needs to translate to _resize calls and to VIEWPORT hint events */
@@ -131,32 +227,69 @@ static void xcb_configure_request(xcb_configure_request_event_t* ev)
 }
 
 /* use stdin/popen/line based format to make debugging easier */
-static void process_wm_command()
+static void process_wm_command(const char* arg)
 {
-	const char* arg = "";
 	struct arg_arr* args = arg_unpack(arg);
 	if (!args)
 		return;
 
+/* all commands have kind/id */
 	const char* dst;
+	if (!arg_lookup(args, "id", 0, &dst)){
+		fprintf(stderr, "malformed argument: %s, missing id\n", arg);
+	}
+
+	uint32_t id = strtoul(dst, NULL, 10);
 	if (!arg_lookup(args, "kind", 0, &dst)){
 		fprintf(stderr, "malformed argument: %s, missing kind\n", arg);
+		goto cleanup;
 	}
-	if (strcmp(dst, "query") == 0){
-	}
-	else if (strcmp(dst, "maximized") == 0){
+
+/* match to previously known window so we get the right handle */
+
+	if (strcmp(dst, "maximized") == 0){
+		trace("srv-maximize");
 	}
 	else if (strcmp(dst, "fullscreen") == 0){
+		trace("srv-fullscreen");
 	}
-	else if (strcmp(dst, "configure") == 0){
+	else if (strcmp(dst, "resize") == 0){
+		arg_lookup(args, "width", 0, &dst);
+		size_t w = strtoul(dst, NULL, 10);
+		arg_lookup(args, "height", 0, &dst);
+		size_t h = strtoul(dst, NULL, 10);
+		trace("srv-resize(%d)(%zu, %zu)", id, w, h);
+
+		xcb_configure_window(dpy, id,
+			XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+			XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
+			XCB_CONFIG_WINDOW_BORDER_WIDTH,
+			(uint32_t[]){0, 0, w, h, 0}
+		);
+		xcb_flush(dpy);
 	}
 	else if (strcmp(dst, "destroy") == 0){
+		trace("srv-destroy");
 	}
 	else if (strcmp(dst, "focus") == 0){
+		trace("srv-focus");
+
+		xcb_set_input_focus(dpy,
+			XCB_INPUT_FOCUS_POINTER_ROOT, id, XCB_CURRENT_TIME);
 	}
 
 cleanup:
 	arg_cleanup(args);
+}
+
+static void* process_thread(void* arg)
+{
+	while (!ferror(stdin) && !feof(stdin)){
+		char inbuf[1024];
+		if (fgets(inbuf, 1024, stdin))
+			process_wm_command(inbuf);
+	}
+	return NULL;
 }
 
 int main (int argc, char **argv)
@@ -166,13 +299,16 @@ int main (int argc, char **argv)
 
 	xcb_generic_event_t *ev;
 
-/* FIXME: this isn't right, we should be responsible for spawning
- * XWayland with -rootless and pass the wm descriptors etc. here,
- * so when that is added, remove the sleep etc.
- */
+	if (getenv("ARCAN_XWLWM_DEBUGSTALL")){
+		volatile bool sleeper = true;
+		while (sleeper){}
+	}
+
 	if (!getenv("DISPLAY")){
 		putenv("DISPLAY=:0");
 	}
+
+/* Missing: spawn XWayland in rootless mode */
 
 	int counter = 10;
 	while (counter--){
@@ -210,6 +346,16 @@ int main (int argc, char **argv)
 	xcb_flush(dpy);
 
 	create_window();
+
+/*
+ * xcb is thread-safe, so we can have one thread for incoming
+ * dispatch and another thread for outgoing dispatch
+ */
+	pthread_t pth;
+	pthread_attr_t pthattr;
+	pthread_attr_init(&pthattr);
+	pthread_attr_setdetachstate(&pthattr, PTHREAD_CREATE_DETACHED);
+	pthread_create(&pth, &pthattr, process_thread, NULL);
 
 /* atom lookup:
  * moveresize, state, fullscreen, maximized vert, maximized horiz, active window
@@ -251,8 +397,11 @@ int main (int argc, char **argv)
     case XCB_CONFIGURE_NOTIFY:
 			trace("configure-notify");
 		break;
-		case XCB_DESTROY_NOTIFY:
+		case XCB_DESTROY_NOTIFY:{
 			trace("destroy-notify");
+			fprintf(stdout, "kind=destroy:id=%"PRIu32"\n",
+				((xcb_destroy_notify_event_t*) ev)->window);
+		}
 		break;
 		case XCB_MAPPING_NOTIFY:
 			trace("mapping-notify");
@@ -262,6 +411,7 @@ int main (int argc, char **argv)
 		break;
 		case XCB_CLIENT_MESSAGE:
 			trace("client-message");
+			xcb_client_message((xcb_client_message_event_t*) ev);
 		break;
 		case XCB_FOCUS_IN:
 			trace("focus-in");
@@ -271,6 +421,7 @@ int main (int argc, char **argv)
 		break;
 		}
 		xcb_flush(dpy);
+		fflush(stdout);
 	}
 
 return 0;
