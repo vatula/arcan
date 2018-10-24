@@ -124,7 +124,8 @@ There are two ways of getting X support for Arcan. One is via the custom
 arcan backend to the xserver that is part of the XArcan setup. The other
 is by using XWayland, both has their respective tradeoffs.
 
-XWayland can be used in two modes, rootless and redirected. The redirected one
+XWayland can be used in two modes, normal and rootless. The normal one is
+similar to Xarcan, but is less tested and doesn't The rootless one
 works 'transparently' but requires the Wayland side to implement a window
 manager. Weston et. al does this by pulling in all of xcb etc. into the
 compositor itself. This approach is not used here due to the poor separation
@@ -135,37 +136,12 @@ early state, and will have a variant that supports the durden control socket
 for communicating events, and one that works transparently from the arcan-
 wayland bridge.
 
-
 To experiment with the XWayland rootless support, try this setup:
 
-    arcan-wayland -exec Xwayland -rootless
-		DISPLAY=:0 arcan-xwayland-wm
-		DISPLAY=:0 xterm
-
-BUGS
-===
-1. gnome-apps, mouse motion registers but not button presses on some
-   popups, likely related to input regions and grabbing and the WM
-	 script-side being guilty.
-2. SDL2, buffer- size and mouse cursor alignment is off in ex. 0ad
-3. gnome-apps, visible with calculator - some interaction between durden
-   and subsurfaces etc. still seem to misbehave.
-4. The defunct wl- shell protocol is still in use in places like SDL2,
-   except the protocol lacks options for communicating when a shutdown
-   is initiated server-side, or it goes into a spinlock EXCEPT if some
-   Qt specific protocols are present
+    arcan-wayland -xwl -exec Xwayland -rootless
 
 TODO
 ====
-
-Rough estimate of planned changes and order:
-
-1. Xwayland
-2. input fixes (regions, D to A mouse wheel, ...)
-3. data-device to clipboard
-4. enforce stronger error handling (not allow surfaces to switch roles etc.)
-5. move more 'decisions' that is part of the durden atype handling
-6. make a simple automatable wayland-only WM appl
 
 (x - done, p - partial/possible-tuning, s - showstopper, i - ignored for now)
 + (for-each finished milestone, verify allocation/deallocation/validation)

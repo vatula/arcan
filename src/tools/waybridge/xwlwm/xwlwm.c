@@ -6,6 +6,10 @@
  * considerations needed for pairing XWayland redirected windows with wayland
  * surfaces etc. Decoupled from the normal XWayland so that both sides can be
  * sandboxed better and possibly used for a similar -rootless mode in Xarcan.
+ *
+ * Points:
+ *  override_redirect : if set, don't focus window
+ *
  */
 #include <arcan_shmif.h>
 #include <inttypes.h>
@@ -97,31 +101,30 @@ static void create_window()
  * supporting wm, selection_owner, ... */
 }
 
-static bool has_atom(xcb_get_property_reply_t* prop, xcb_atom_t atom)
+static bool has_atom(
+	xcb_get_property_reply_t* prop, enum atom_names atom)
 {
 	if (prop == NULL || xcb_get_property_value_length(prop) == 0)
 		return false;
 
-	xcb_atom_t *atoms;
-	if ((atoms = xcb_get_property_value(prop)) == NULL)
+	xcb_atom_t* atom_query = xcb_get_property_value(prop);
+	if (!atom_query){
 		return false;
+	}
 
 	size_t count = xcb_get_property_value_length(prop) / (prop->format / 8);
 	for (size_t i = 0; i < count; i++){
-	if (atoms[i] == atom)
+		if (atom_query[i] == atoms[atom]){
 			return true;
+		}
 	}
 
 	return false;
 }
 
-static void xcb_map_request(xcb_map_request_event_t* ev)
+static void send_updated_window(
+	const char* kind, uint32_t id, int32_t x, int32_t y)
 {
-/* while the above could've made a round-trip to make sure we don't
- * race with the wayland channel, the approach of detecting surface-
- * type and checking seems to work ok (xwl.c) */
-	xcb_map_window(dpy, ev->window);
-
 /*
  * metainformation about the window to better select a type and behavior.
  *
@@ -129,14 +132,14 @@ static void xcb_map_request(xcb_map_request_event_t* ev)
  * maps to the segment type.
  */
 	xcb_get_property_cookie_t cookie = xcb_get_property(
-		dpy, 0, ev->window, atoms[NET_WM_WINDOW_TYPE], XCB_ATOM_ANY, 0, 2048);
+		dpy, 0, id, atoms[NET_WM_WINDOW_TYPE], XCB_ATOM_ANY, 0, 2048);
 	xcb_get_property_reply_t* reply = xcb_get_property_reply(dpy, cookie, NULL);
 
 /* couldn't find out more, just map it and hope */
 	bool popup = false, dnd = false, menu = false, notification = false;
 	bool splash = false, tooltip = false, utility = false, dropdown = false;
 
-	fprintf(stdout, "kind=map:id=%"PRIu32, ev->window);
+	fprintf(stdout, "kind=%s:id=%"PRIu32, kind, id);
 	if (reply){
 		popup = has_atom(reply, NET_WM_WINDOW_TYPE_POPUP_MENU);
 		dnd = has_atom(reply, NET_WM_WINDOW_TYPE_DND);
@@ -150,11 +153,21 @@ static void xcb_map_request(xcb_map_request_event_t* ev)
 
 		if (popup || dnd || dropdown || menu ||
 			notification || splash || tooltip || utility){
+			trace("subsurface-map");
 			fprintf(stdout, ":type=subsurface");
 		}
 	}
 
-	fprintf(stdout, "\n");
+	cookie = xcb_get_property(dpy,
+		0, id, XCB_ATOM_WM_TRANSIENT_FOR, XCB_ATOM_WINDOW, 0, 2048);
+	reply = xcb_get_property_reply(dpy, cookie, NULL);
+
+	if (reply){
+		xcb_window_t* pwd = xcb_get_property_value(reply);
+		fprintf(stdout, ":parent=%"PRIu32, *pwd);
+		free(reply);
+	}
+
 /*
  * a bunch of translation heuristics here:
  *  transient_for ? convert to parent- relative coordinates unless input
@@ -169,10 +182,37 @@ static void xcb_map_request(xcb_map_request_event_t* ev)
  *  input, initial_state, pixmap, window, position, mask, group,
  *  message, urgency
  */
+	fprintf(stdout, ":x=%"PRId32":y=%"PRId32"\n", x, y);
+}
 
-/* XCB_ATOM_WM_TRANSIENT_FOR
- *  flag as subsurface and use another window as reference
- */
+static void xcb_create_notify(xcb_create_notify_event_t* ev)
+{
+	send_updated_window("create", ev->window, ev->x, ev->y);
+}
+
+static void xcb_map_notify(xcb_map_notify_event_t* ev)
+{
+/* chances are that we get mapped with different atoms being set,
+ * particularly for popups used by cutebrowser etc. */
+	xcb_get_property_cookie_t cookie = xcb_get_property(dpy,
+		0, ev->window, XCB_ATOM_WM_TRANSIENT_FOR, XCB_ATOM_WINDOW, 0, 2048);
+	xcb_get_property_reply_t* reply = xcb_get_property_reply(dpy, cookie, NULL);
+
+	if (reply){
+		xcb_window_t* pwd = xcb_get_property_value(reply);
+		fprintf(stdout,
+			"kind=parent:id=%"PRIu32":parent_id=%"PRIu32"\n", ev->window, *pwd);
+		free(reply);
+	}
+}
+
+static void xcb_map_request(xcb_map_request_event_t* ev)
+{
+/* while the above could've made a round-trip to make sure we don't
+ * race with the wayland channel, the approach of detecting surface-
+ * type and checking seems to work ok (xwl.c) */
+	xcb_map_window(dpy, ev->window);
+	/*send_updated_window("map", ev->window); */
 }
 
 static void xcb_unmap_notify(xcb_unmap_notify_event_t* ev)
@@ -199,6 +239,16 @@ static void xcb_client_message(xcb_client_message_event_t* ev)
 		);
 	}
 }
+
+static void xcb_configure_notify(xcb_configure_notify_event_t* ev)
+{
+	trace("configure-notify:%"PRIu32" @%d,%d", ev->window, ev->x, ev->y);
+	fprintf(stdout,
+		"kind=configure:id=%"PRIu32":x=%d:y=%d:w=%d:h=%d\n",
+		ev->window, ev->x, ev->y, ev->width, ev->height
+	);
+}
+
 static void xcb_configure_request(xcb_configure_request_event_t* ev)
 {
 /* this needs to translate to _resize calls and to VIEWPORT hint events */
@@ -219,11 +269,6 @@ static void xcb_configure_request(xcb_configure_request_event_t* ev)
 
 	xcb_set_input_focus(dpy,
 		XCB_INPUT_FOCUS_POINTER_ROOT, ev->window, XCB_CURRENT_TIME);
-/*
- * weston does a bit more here,
- *  see _read_properties (protocols, normal hints, wm state,
- *  window type, name, pid, motif_wm_hints, wm_client_machine)
- */
 }
 
 /* use stdin/popen/line based format to make debugging easier */
@@ -270,6 +315,7 @@ static void process_wm_command(const char* arg)
 	}
 	else if (strcmp(dst, "destroy") == 0){
 		trace("srv-destroy");
+		xcb_destroy_window(dpy, id);
 	}
 	else if (strcmp(dst, "focus") == 0){
 		trace("srv-focus");
@@ -375,17 +421,15 @@ int main (int argc, char **argv)
 			trace("enter-notify");
 		break;
 		case XCB_CREATE_NOTIFY:
-			trace("create-notify");
+			xcb_create_notify((xcb_create_notify_event_t*) ev);
 		break;
 		case XCB_MAP_REQUEST:
-			trace("map-request");
 			xcb_map_request((xcb_map_request_event_t*) ev);
 		break;
     case XCB_MAP_NOTIFY:
-			trace("map-notify");
+			xcb_map_notify((xcb_map_notify_event_t*) ev);
 		break;
     case XCB_UNMAP_NOTIFY:
-			trace("unmap-notify");
 			xcb_unmap_notify((xcb_unmap_notify_event_t*) ev);
 		break;
     case XCB_REPARENT_NOTIFY:
@@ -395,10 +439,9 @@ int main (int argc, char **argv)
 			xcb_configure_request((xcb_configure_request_event_t*) ev);
 		break;
     case XCB_CONFIGURE_NOTIFY:
-			trace("configure-notify");
+			xcb_configure_notify((xcb_configure_notify_event_t*) ev);
 		break;
 		case XCB_DESTROY_NOTIFY:{
-			trace("destroy-notify");
 			fprintf(stdout, "kind=destroy:id=%"PRIu32"\n",
 				((xcb_destroy_notify_event_t*) ev)->window);
 		}

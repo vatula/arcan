@@ -40,8 +40,11 @@ static size_t wmfd_ofs = 0;
 struct xwl_window {
 	uint32_t id;
 	uint32_t surface_id;
+	uint32_t parent_id;
 	bool paired;
 	bool subsurface;
+	struct arcan_event viewport;
+	struct comp_surf* surf;
 };
 
 /* just linear search in a fixed buffer for now, scaling problems
@@ -85,6 +88,30 @@ static struct xwl_window* xwl_find_alloc(uint32_t id)
 	return wnd;
 }
 
+static void wnd_viewport(struct xwl_window* wnd)
+{
+	if (!wnd->surf)
+		return;
+
+	arcan_shmif_enqueue(&wnd->surf->acon, &wnd->viewport);
+
+	trace(TRACE_XWL, "viewport id:%"PRIu32",parent:%"PRIu32"@%"PRId32",%"PRId32,
+		wnd->id, wnd->parent_id,
+		wnd->viewport.ext.viewport.x, wnd->viewport.ext.viewport.y
+	);
+}
+
+/*
+ * Take an input- line from the window manager, unpack it, and interpret the
+ * command inside. A noticable part here is that the resolved window may be
+ * in an unallocated, unpaired or paired state here and the input itself is
+ * not necessarily trusted.
+ *
+ * Thus any extracted field or update that should propagate as an event to
+ * a backing shmif connection need to be support being deferred until
+ * pairing / allocation - and resist UAF/spoofing. Luckily, there is not
+ * many events that need to be forwarded.
+ */
 static void process_input(const char* msg)
 {
 	trace(TRACE_XWL, "wm->%s", msg);
@@ -94,15 +121,13 @@ static void process_input(const char* msg)
 		return;
 	}
 
-/* map : id ( window should be made visibile )
- * unmap : id ( window should be made invisible )
- * configure : id ( resize/reposition )
- */
+/* all commands should have a 'kind' field */
 	const char* arg;
 	if (!arg_lookup(cmd, "kind", 0, &arg)){
 		trace(TRACE_XWL, "malformed argument: %s, missing kind", msg);
 		goto cleanup;
 	}
+/* pair surface */
 	else if (strcmp(arg, "surface") == 0){
 		if (!arg_lookup(cmd, "id", 0, &arg)){
 			trace(TRACE_XWL, "malformed surface argument: missing id");
@@ -122,7 +147,8 @@ static void process_input(const char* msg)
 		wnd->id = id;
 		wnd->paired = true;
 	}
-	else if (strcmp(arg, "map") == 0){
+/* window goes from invisible to visible state */
+	else if (strcmp(arg, "create") == 0){
 		if (!arg_lookup(cmd, "id", 0, &arg)){
 			trace(TRACE_XWL, "malformed map argument: missing id");
 			goto cleanup;
@@ -139,15 +165,39 @@ static void process_input(const char* msg)
 			wnd->subsurface = true;
 		}
 	}
+	else if (strcmp(arg, "map") == 0){
+
+	}
+/* window goes from visibile to invisible state */
 	else if (strcmp(arg, "unmap") == 0){
 
 	}
+/* window changes position or hierarchy, the size part is tied to the
+ * buffer in shmif- parlerance so we don't really care to match that
+ * here */
 	else if (strcmp(arg, "configure") == 0){
-/* currently the xcb_configure_request on the other side blindly
- * accepts their idea of the configure as to the size, it will be
- * reflected on the next buffer commit, what we can do here is
- * VIEWPORT- hint the x/y */
-		trace(TRACE_XWL, "configure");
+		if (!arg_lookup(cmd, "id", 0, &arg)){
+			trace(TRACE_XWL, "malformed surface argument: missing surface id");
+			goto cleanup;
+		}
+		uint32_t id = strtoul(arg, NULL, 10);
+		struct xwl_window* wnd = xwl_find(id);
+		if (!wnd){
+			trace(TRACE_XWL, "configure on unknown id %"PRIu32, id);
+			goto cleanup;
+		}
+
+/* we cache the viewport event for the window as well as for the surface
+ * due to the possibility of the unpaired state */
+		if (arg_lookup(cmd, "x", 0, &arg)){
+			wnd->viewport.ext.viewport.x = strtol(arg, NULL, 10);
+		}
+		if (arg_lookup(cmd, "y", 0, &arg)){
+			wnd->viewport.ext.viewport.y = strtol(arg, NULL, 10);
+		}
+
+/* and either reflect now or later */
+		wnd_viewport(wnd);
 	}
 
 cleanup:
@@ -256,29 +306,41 @@ static bool xwlsurf_shmifev_handler(
 
 	switch (ev->tgt.kind){
 	case TARGET_COMMAND_DISPLAYHINT:{
+		struct surf_state states = surf->states;
+		bool changed = displayhint_handler(surf, &ev->tgt);
 		int rw = ev->tgt.ioevs[0].iv;
 		int rh = ev->tgt.ioevs[1].iv;
 		int dw = rw - (int)surf->acon.w;
 		int dh = rh - (int)surf->acon.h;
+
+/* split up into resize requests and focus/input changes */
 		if (rw > 0 && rh > 0 && (dw != 0 || dh != 0)){
 			trace(TRACE_XWL, "displayhint: %"PRIu32",%"PRIu32,
 				ev->tgt.ioevs[0].iv, ev->tgt.ioevs[1].iv);
 
 			fprintf(wmfd_output,
-				"id=%"PRIu32":kind=resize:width=%"PRIu32":height=%"PRIu32"\n",
+				"id=%"PRIu32":kind=resize:width=%"PRIu32":height=%"PRIu32"%s\n",
 				(uint32_t) wnd->id,
 				(uint32_t) abs(ev->tgt.ioevs[0].iv),
-				(uint32_t) abs(ev->tgt.ioevs[1].iv)
+				(uint32_t) abs(ev->tgt.ioevs[1].iv),
+				(surf->states.drag_resize) ? ":drag" : ""
 			);
-			fflush(wmfd_output);
 		}
+
+		if (changed){
+			if (states.unfocused != surf->states.unfocused){
+				fprintf(wmfd_output, "id=%"PRIu32"%s\n",
+					surf->id, states.unfocused ? ":kind=unfocus" : ":kind=focus");
+			}
+		}
+
+		fflush(wmfd_output);
 		return true;
 	}
-/* write to the xwl_wm_fd:
- * configure:id=%d:...
- * focus:id=%d
- */
-	break;
+	case TARGET_COMMAND_EXIT:
+		fprintf(wmfd_output, "kind=destroy:id=%"PRIu32"\n", wnd->id);
+		fflush(wmfd_output);
+		return true;
 	default:
 	break;
 	}
@@ -299,6 +361,10 @@ static bool xwl_defer_handler(
 	surf->shell_res = req->target;
 	surf->dispatch = xwlsurf_shmifev_handler;
 	surf->id = wl_resource_get_id(surf->shell_res);
+
+	struct xwl_window* wnd = (req->tag);
+	wnd->surf = surf;
+	wnd_viewport(wnd);
 
 	return true;
 }
@@ -325,8 +391,8 @@ static struct xwl_window*
 	else if (!wnd->paired){
 		trace(TRACE_XWL, "paired %"PRIu32, id);
 		wnd->paired = true;
+		wnd->surf = surf;
 	}
-
 	return wnd;
 }
 
@@ -337,6 +403,10 @@ static bool xwl_pair_surface(struct comp_surf* surf, struct wl_resource* res)
 	if (!wnd)
 		return false;
 
+/* not a good way to defer buffer commit until properly paired */
+	while (!wnd->paired)
+		xwl_check_wm();
+
 /* if so, allocate the corresponding arcan- side resource */
 	return request_surface(surf->client, &(struct surface_request){
 /* SEGID should be X11, but need to patch durden as well */
@@ -346,6 +416,6 @@ static bool xwl_pair_surface(struct comp_surf* surf, struct wl_resource* res)
 			.dispatch = xwl_defer_handler,
 			.client = surf->client,
 			.source = surf,
-			.tag = NULL
+			.tag = wnd
 	}, 'X');
 }
