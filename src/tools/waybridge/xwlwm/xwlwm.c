@@ -153,8 +153,7 @@ static void send_updated_window(
 
 		if (popup || dnd || dropdown || menu ||
 			notification || splash || tooltip || utility){
-			trace("subsurface-map");
-			fprintf(stdout, ":type=subsurface");
+			fprintf(stdout, ":type=%s", (popup || dropdown) ? "popup" : "subsurface");
 		}
 	}
 
@@ -267,8 +266,10 @@ static void xcb_configure_request(xcb_configure_request_event_t* ev)
 		(uint32_t[]){ev->x, ev->y, ev->width, ev->height, 0}
 	);
 
-	xcb_set_input_focus(dpy,
+/*
+ * xcb_set_input_focus(dpy,
 		XCB_INPUT_FOCUS_POINTER_ROOT, ev->window, XCB_CURRENT_TIME);
+ */
 }
 
 /* use stdin/popen/line based format to make debugging easier */

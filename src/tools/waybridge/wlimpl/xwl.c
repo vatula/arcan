@@ -38,12 +38,24 @@ static size_t wmfd_ofs = 0;
  * is commited without a known backing on the compositor, and try
  * to 'pair' it with ones that we have been told about */
 struct xwl_window {
+
+/* Xid for Window */
 	uint32_t id;
+
+/* Wayland client-local reference ID */
 	uint32_t surface_id;
+
+/* Parent Xid for Window */
 	uint32_t parent_id;
-	bool paired;
-	bool subsurface;
+
+/* Resolved 'arcan' type */
+	int segid;
+
+/* Track viewport separate from comp_surf viewport as it can be
+ * populated when there is still no surf to pair it to */
 	struct arcan_event viewport;
+
+	bool paired;
 	struct comp_surf* surf;
 };
 
@@ -84,7 +96,9 @@ static struct xwl_window* xwl_find_alloc(uint32_t id)
 	if (wnd)
 		return wnd;
 
+/* default to 'toplevel' like behavior */
 	wnd = xwl_find(0);
+	wnd->segid = SEGID_APPLICATION;
 	return wnd;
 }
 
@@ -92,6 +106,18 @@ static void wnd_viewport(struct xwl_window* wnd)
 {
 	if (!wnd->surf)
 		return;
+
+/* always re-resolve parent token */
+	wnd->viewport.ext.viewport.parent = 0;
+	if (wnd->parent_id > 0){
+		struct xwl_window* pwnd = xwl_find(wnd->parent_id);
+		if (!pwnd || !pwnd->surf){
+			trace(TRACE_XWL, "bad parent id:%"PRIu32, wnd->parent_id);
+		}
+		else{
+			wnd->viewport.ext.viewport.parent = pwnd->surf->acon.segment_token;
+		}
+	}
 
 	arcan_shmif_enqueue(&wnd->surf->acon, &wnd->viewport);
 
@@ -162,8 +188,39 @@ static void process_input(const char* msg)
 		wnd->id = id;
 		if (arg_lookup(cmd, "type", 0, &arg)){
 			trace(TRACE_XWL, "mapped with type %s", arg);
-			wnd->subsurface = true;
+			if (strcmp(arg, "popup") == 0){
+				wnd->viewport.ext.viewport.focus = true;
+				wnd->segid = SEGID_POPUP;
+			}
+			else
+				wnd->segid = SEGID_MEDIA;
 		}
+		else
+			wnd->segid = SEGID_APPLICATION;
+
+		if (arg_lookup(cmd, "parent", 0, &arg)){
+			uint32_t parent_id = strtoul(arg, NULL, 0);
+			struct xwl_window* wnd = xwl_find(parent_id);
+			if (wnd)
+				wnd->parent_id = parent_id;
+			else
+				trace(TRACE_XWL, "bad parent-id: "PRIu32, parent_id);
+		}
+	}
+	else if (strcmp(arg, "parent") == 0){
+		if (!arg_lookup(cmd, "id", 0, &arg))
+			goto cleanup;
+		uint32_t id = strtoul(arg, NULL, 10);
+
+		if (!arg_lookup(cmd, "parent_id", 0, &arg))
+			goto cleanup;
+		uint32_t parent_id = strtoul(arg, NULL, 10);
+		struct xwl_window* wnd = xwl_find(id);
+		if (!wnd)
+			goto cleanup;
+		wnd->parent_id = parent_id;
+		trace(TRACE_XWL, "reparent id:%"PRIu32" to %"PRIu32, id, parent_id);
+		wnd_viewport(wnd);
 	}
 	else if (strcmp(arg, "map") == 0){
 
@@ -387,6 +444,7 @@ static struct xwl_window*
 			return NULL;
 		}
 		wnd->surface_id = id;
+		wnd->segid = SEGID_APPLICATION;
 	}
 	else if (!wnd->paired){
 		trace(TRACE_XWL, "paired %"PRIu32, id);
@@ -410,7 +468,7 @@ static bool xwl_pair_surface(struct comp_surf* surf, struct wl_resource* res)
 /* if so, allocate the corresponding arcan- side resource */
 	return request_surface(surf->client, &(struct surface_request){
 /* SEGID should be X11, but need to patch durden as well */
-			.segid = wnd->subsurface ? SEGID_MEDIA : SEGID_APPLICATION,
+			.segid = wnd->segid,
 			.target = res,
 			.trace = "xwl",
 			.dispatch = xwl_defer_handler,
