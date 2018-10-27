@@ -55,6 +55,11 @@ struct xwl_window {
  * populated when there is still no surf to pair it to */
 	struct arcan_event viewport;
 
+/*
+ * Pairing approach is flawed, we need to defer the commit- release
+ * stage on mismatch, not just assume and alloc as that'll just
+ * break stuff.
+ */
 	bool paired;
 	struct comp_surf* surf;
 };
@@ -458,12 +463,8 @@ static bool xwl_pair_surface(struct comp_surf* surf, struct wl_resource* res)
 {
 /* do we know of a matching xwayland- provided surface? */
 	struct xwl_window* wnd = lookup_surface(surf, res);
-	if (!wnd)
+	if (!wnd || !wnd->paired)
 		return false;
-
-/* not a good way to defer buffer commit until properly paired */
-	while (!wnd->paired)
-		xwl_check_wm();
 
 /* if so, allocate the corresponding arcan- side resource */
 	return request_surface(surf->client, &(struct surface_request){

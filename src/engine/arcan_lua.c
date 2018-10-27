@@ -3110,7 +3110,7 @@ static int deleteimage(lua_State* ctx)
  */
 	arcan_errc rv = arcan_video_deleteobject(id);
 
-	if (rv != ARCAN_OK)
+	if (rv != ARCAN_OK && id != ARCAN_VIDEO_WORLDID)
 		arcan_fatal("Tried to delete non-existing object (%.0lf=>%d)", srcid, id);
 
 	LUA_ETRACE("delete_image", NULL, 0);
