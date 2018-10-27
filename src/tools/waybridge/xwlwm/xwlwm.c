@@ -122,6 +122,38 @@ static bool has_atom(
 	return false;
 }
 
+static int check_window_state(uint32_t id)
+{
+	xcb_get_property_cookie_t cookie = xcb_get_property(
+		dpy, 0, id, atoms[NET_WM_WINDOW_TYPE], XCB_ATOM_ANY, 0, 2048);
+	xcb_get_property_reply_t* reply = xcb_get_property_reply(dpy, cookie, NULL);
+
+/* couldn't find out more, just map it and hope */
+	bool popup = false, dnd = false, menu = false, notification = false;
+	bool splash = false, tooltip = false, utility = false, dropdown = false;
+
+	if (!reply)
+		return -1;
+
+	popup = has_atom(reply, NET_WM_WINDOW_TYPE_POPUP_MENU);
+	dnd = has_atom(reply, NET_WM_WINDOW_TYPE_DND);
+	dropdown = has_atom(reply, NET_WM_WINDOW_TYPE_DROPDOWN_MENU);
+	menu  = has_atom(reply, NET_WM_WINDOW_TYPE_MENU);
+	notification = has_atom(reply, NET_WM_WINDOW_TYPE_NOTIFICATION);
+	splash = has_atom(reply, NET_WM_WINDOW_TYPE_SPLASH);
+	tooltip = has_atom(reply, NET_WM_WINDOW_TYPE_TOOLTIP);
+	utility = has_atom(reply, NET_WM_WINDOW_TYPE_UTILITY);
+	free(reply);
+
+	if (popup || menu)
+		return 1;
+
+	if (dnd || dropdown || notification || splash || tooltip || utility)
+		return 2;
+
+	return 0;
+}
+
 static void send_updated_window(
 	const char* kind, uint32_t id, int32_t x, int32_t y)
 {
@@ -131,35 +163,16 @@ static void send_updated_window(
  * _NET_WM_WINDOW_TYPE replaces MOTIF_WM_HINTS so we much prefer that as it
  * maps to the segment type.
  */
-	xcb_get_property_cookie_t cookie = xcb_get_property(
-		dpy, 0, id, atoms[NET_WM_WINDOW_TYPE], XCB_ATOM_ANY, 0, 2048);
-	xcb_get_property_reply_t* reply = xcb_get_property_reply(dpy, cookie, NULL);
-
-/* couldn't find out more, just map it and hope */
-	bool popup = false, dnd = false, menu = false, notification = false;
-	bool splash = false, tooltip = false, utility = false, dropdown = false;
-
 	fprintf(stdout, "kind=%s:id=%"PRIu32, kind, id);
-	if (reply){
-		popup = has_atom(reply, NET_WM_WINDOW_TYPE_POPUP_MENU);
-		dnd = has_atom(reply, NET_WM_WINDOW_TYPE_DND);
-		dropdown = has_atom(reply, NET_WM_WINDOW_TYPE_DROPDOWN_MENU);
-		menu  = has_atom(reply, NET_WM_WINDOW_TYPE_MENU);
-		notification = has_atom(reply, NET_WM_WINDOW_TYPE_NOTIFICATION);
-		splash = has_atom(reply, NET_WM_WINDOW_TYPE_SPLASH);
-		tooltip = has_atom(reply, NET_WM_WINDOW_TYPE_TOOLTIP);
-		utility = has_atom(reply, NET_WM_WINDOW_TYPE_UTILITY);
-		free(reply);
+	int ws = check_window_state(id);
+	if (ws == 1)
+		fprintf(stdout, ":type=popup");
+	else if (ws == 2)
+		fprintf(stdout, ":type=subsurface");
 
-		if (popup || dnd || dropdown || menu ||
-			notification || splash || tooltip || utility){
-			fprintf(stdout, ":type=%s", (popup || dropdown) ? "popup" : "subsurface");
-		}
-	}
-
-	cookie = xcb_get_property(dpy,
+	xcb_get_property_cookie_t cookie = xcb_get_property(dpy,
 		0, id, XCB_ATOM_WM_TRANSIENT_FOR, XCB_ATOM_WINDOW, 0, 2048);
-	reply = xcb_get_property_reply(dpy, cookie, NULL);
+	xcb_get_property_reply_t* reply = xcb_get_property_reply(dpy, cookie, NULL);
 
 	if (reply){
 		xcb_window_t* pwd = xcb_get_property_value(reply);
@@ -306,12 +319,14 @@ static void process_wm_command(const char* arg)
 		size_t h = strtoul(dst, NULL, 10);
 		trace("srv-resize(%d)(%zu, %zu)", id, w, h);
 
-		xcb_configure_window(dpy, id,
-			XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
-			XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
-			XCB_CONFIG_WINDOW_BORDER_WIDTH,
-			(uint32_t[]){0, 0, w, h, 0}
-		);
+/* just don't configure popus / tooltips / ... */
+		if (check_window_state(id) <= 0)
+			xcb_configure_window(dpy, id,
+				XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+				XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT |
+				XCB_CONFIG_WINDOW_BORDER_WIDTH,
+				(uint32_t[]){0, 0, w, h, 0}
+			);
 		xcb_flush(dpy);
 	}
 	else if (strcmp(dst, "destroy") == 0){
