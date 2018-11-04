@@ -57,10 +57,17 @@ a12_channel_close(struct a12_state*);
 
 /*
  * Take an incoming byte buffer and append to the current state of
- * the channel.
+ * the channel. Any received events will be pushed via the callback.
  */
-void
-a12_channel_unpack(struct a12_state*, const uint8_t*, size_t);
+void a12_channel_unpack(
+	struct a12_state*, const uint8_t*, size_t, void* tag,
+	void (*on_event)(int chid, struct arcan_event*, void*));
+
+/*
+ * Set the specified context as the recipient of audio/video buffers.
+ */
+void a12_set_destination(
+	struct a12_state*, struct arcan_shmif_cont* wnd, int chid);
 
 /*
  * Returns the number of bytes that are pending for output on the channel,
@@ -99,4 +106,9 @@ a12_channel_poll(struct a12_state*);
 void
 a12_channel_enqueue(struct a12_state*, struct arcan_event*);
 
+/*
+ * forward a vbuffer from shm
+ */
+void
+a12_channel_vframe(struct a12_state* S, struct shmifsrv_vbuffer* vb);
 #endif

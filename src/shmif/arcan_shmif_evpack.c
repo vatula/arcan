@@ -38,8 +38,7 @@ ssize_t arcan_shmif_eventpack(
 		return -1;
 
 	uint16_t checksum = subp_checksum(
-		(const uint8_t* const)aev, sizeof(struct arcan_event)) ^
-		(uint16_t)((ASHMIF_VERSION_MAJOR << 2) | ASHMIF_VERSION_MINOR);
+		(const uint8_t* const)aev, sizeof(struct arcan_event));
 
 	memcpy(dbuf, &checksum, sizeof(uint16_t));
 	memcpy(&dbuf[2], aev, sizeof(struct arcan_event));
@@ -57,10 +56,8 @@ ssize_t arcan_shmif_eventunpack(
 	memcpy(&chksum_in, buf, sizeof(uint16_t));
 	memcpy(out, &buf[2], sizeof(struct arcan_event));
 
-	uint16_t chksum = subp_checksum((const uint8_t*)out,
-		sizeof(struct arcan_event)) ^
-		(uint16_t)((ASHMIF_VERSION_MAJOR << 2) | ASHMIF_VERSION_MINOR
-	);
+	uint16_t chksum = subp_checksum(
+		(const uint8_t*)out, sizeof(struct arcan_event));
 
 	if (chksum_in != chksum)
 		return -1;

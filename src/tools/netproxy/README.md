@@ -92,30 +92,42 @@ ANYONE ON THE NETWORK CAN SEE WHAT YOU DO.
 
 # Protocol
 
-UDT is used to build the basic channel, and segments/subsegments correlate
-1:1 to communication channels - each working on their own thread.
+Two primary transports are intended, one tunneled through ssh and via the
+arcan-netpipe tool. The other is using UDT or a similar low-latency UDP
+transport.
 
-Encryption is built on Curve25519 + blake2-aes128-ctr
+Each arcan segment correlates to a 'channel' that can be multiplexed over
+one of these transports, with a sequence number used as a synchronization
+primitive for re-linearization.
 
-Everything is LE, because even though that makes IETF cry and it is the lesser
-of the two options - it still won out.
+Encryption is built on preauthenticated curve25519 with blake2-aes128-ctr
+for MAC and cipher. Each message begins with a 16 byte MAC, keyed with the
+input auth-key for the first message, then payload prefixed with the MAC
+from the last message.
 
-Each message begins with a 16 byte MAC, keyed with the input auth-key for
-the first message, then payload prefixed with the MAC from the last message.
+Each message has the outer structure of :
 
-The payload is encrypt-then=MAC (if there has been a session key negotiated)
+ |---------------------|
+ |    16 byte MAC      |
+ |---------------------|
+ | 4 byte sequence     |-
+ | 1 byte command code | - } encrypted block
+ | command-code data   | -
+ |---------------------|-
+
+The payload is encrypt-then-MAC (if there has been a session key negotiated)
 The stream-cipher server-to-client starts at [8bIV,8bCTR(0)] and the
-client-to-server starts at [8bIV,8bCTR(1<<32)].
+client-to-server starts at [8bIV,8bCTR(1<<32)] with session rekey/rebuild.
 
-After the MAC comes a 1-byte unsigned type selector, then a number of bytes
-that depends on the specified type. The contents, including the type, is
-encrypted when/if such a negotiation has occured (see control messages).
+After the MAC comes a 4 byte LSB unsigned sequence number, and then a 1 byte
+command code, then a number of command-specific bytes. The sequence number
+does not necessarily increment between messages as v/a/b streams might be
+multipart.
 
 The different message types are:
 
 1. control (128b fixed)
-2. event (match 1 or many arcan-event samples packed, fixed to the packing
-   size of the version of shmif on the running server, versions must match)
+2. event, tied to the format of arcan\_shmif\_evpack()
 3. vstream-data
 4. astream-data
 5. bstream-data
@@ -125,26 +137,21 @@ to avoid input- bubbles, and there is only one a/v/b type of transfer going
 on at any one time. The rest are expected to block- the source or queue up.
 
 If the most significant bit of the sequence number is set, it is a discard-
-message used to mess with side-channel analysis for cases where bandwidth is a
-lesser concern than security.
+message used to mess with side-channel analysis for cases where bandwidth
+is a lesser concern than security.
 
 ## Control (1)
-- sequence number : uint64
 - last-seen seqnr : uint64
 - entropy : uint8[8]
 - channel-id : uint8
 - command : uint8
 
-The sequence number and last-seen are used both as a timing channel and to
-determine drift. If the two sides start drifting outside a certain window,
-measures to reduce bandwidth should be taken, including increasing compression
-parameters, lowering sample- and frame- rates, cancelling ongoing frames,
-merging / delaying input events, scaling window sizes, ...
-If they still keep drifting, show a user notice and destroy the channel.
-
-control messages always contain some entropy (random bytes) that can be
-mixed in locally to assist rekeying etc. but also to provide replay
-protection.
+The last-seen are used both as a timing channel and to determine drift.
+If the two sides start drifting outside a certain window, measures to reduce
+bandwidth should be taken, including increasing compression parameters,
+lowering sample- and frame- rates, cancelling ongoing frames, merging /
+delaying input events, scaling window sizes, ... If they still keep
+drifting, show a user notice and destroy the channel.
 
 ### command = 0, hello
 First message sent of the channel, it's rude not to say hi.
@@ -156,6 +163,8 @@ The nice way of saying that everything is about to be shut down.
 - K(auth) : uint8[16]
 - K(pub) : uint8[32]
 - IV : uint8[8]
+
+Used to generate ephemeral keys and rekey after this sequence number.
 
 ### command = 3, channel rekey
 - K(auth) : uint8[16]

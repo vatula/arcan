@@ -18,6 +18,8 @@ add_definitions(
 	-DPOSIX_C_SOURCE
 	-DGNU_SOURCE
 	-Wno-unused-function
+	-pthread
+	-fPIC
 )
 
 include(ExternalProject)
@@ -49,6 +51,7 @@ include_directories(
 
 SET(LIBRARIES
 	m
+	pthread
 	${ARCAN_SHMIF_LIBRARY}
 	${ARCAN_SHMIF_SERVER_LIBRARY}
 )
@@ -67,7 +70,6 @@ set_property(TARGET arcan-net PROPERTY CXX_STANDARD 11)
 set_property(TARGET arcan-netpipe PROPERTY C_STANDARD 11)
 
  target_link_libraries(arcan-net ${LIBRARIES}
-	pthread
 	${CMAKE_CURRENT_BINARY_DIR}/udt-prefix/src/udt-build/libudt.a
 )
 target_link_libraries(arcan-netpipe ${LIBRARIES})
