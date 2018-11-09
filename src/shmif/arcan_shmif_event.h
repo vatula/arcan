@@ -432,6 +432,7 @@ enum ARCAN_TARGET_COMMAND {
 	TARGET_COMMAND_AUDDELAY,
 
 /*
+ * [DESCRIPTOR_PASSING]
  * Signals that a new subsegment has arrived, either as the reply to a previous
  * user request, or as an explicit feature announce when there is no matching
  * request cookie.
@@ -642,6 +643,7 @@ enum ARCAN_EVENT_EXTERNAL {
 	EVENT_EXTERNAL_FAILURE,
 
 /*
+ * [DESCRIPTOR PASSING]
  * Similar to FDTRANSFER in that the server is expected to take responsibility
  * for a descriptor on the pipe that should be used for rendering instead of
  * the .vidp buffer. This is for accelerated transfers when using an AGP

@@ -1276,7 +1276,9 @@ bool arcan_shmif_integrity_check(struct arcan_shmif_cont* cont)
 
 	if (shmp->major != ASHMIF_VERSION_MAJOR ||
 		shmp->minor != ASHMIF_VERSION_MINOR){
-		LOG("frameserver::shmif integrity check failed, version mismatch\n");
+		LOG("frameserver::shmif integrity check failed,"
+			" mismatch: (srv) %d.%d - (cl) %d.%d", shmp->major, shmp->minor,
+			ASHMIF_VERSION_MAJOR, ASHMIF_VERSION_MINOR);
 		return false;
 	}
 
@@ -1971,25 +1973,28 @@ bool arcan_shmif_descrevent(struct arcan_event* ev)
 	if (!ev)
 		return false;
 
-	if (ev->category != EVENT_TARGET)
+	if (ev->category == EVENT_TARGET){
+		unsigned list[] = {
+			TARGET_COMMAND_STORE,
+			TARGET_COMMAND_RESTORE,
+			TARGET_COMMAND_DEVICE_NODE,
+			TARGET_COMMAND_FONTHINT,
+			TARGET_COMMAND_BCHUNK_IN,
+			TARGET_COMMAND_BCHUNK_OUT,
+			TARGET_COMMAND_NEWSEGMENT
+		};
+
+		for (size_t i = 0; i < COUNT_OF(list); i++){
+			if (ev->tgt.kind == list[i] &&
+				ev->tgt.ioevs[0].iv != BADFD)
+					return true;
+		}
+
 		return false;
-
-	unsigned list[] = {
-		TARGET_COMMAND_STORE,
-		TARGET_COMMAND_RESTORE,
-		TARGET_COMMAND_DEVICE_NODE,
-		TARGET_COMMAND_FONTHINT,
-		TARGET_COMMAND_BCHUNK_IN,
-		TARGET_COMMAND_BCHUNK_OUT
-	};
-
-	for (size_t i = 0; i < COUNT_OF(list); i++){
-		if (ev->tgt.kind == list[i] &&
-			ev->tgt.ioevs[0].iv != BADFD)
-				return true;
 	}
-
-	return false;
+	else
+		return (ev->category == EVENT_EXTERNAL &&
+			ev->ext.kind == EVENT_EXTERNAL_BUFFERSTREAM);
 }
 
 int arcan_shmif_dupfd(int fd, int dstnum, bool blocking)

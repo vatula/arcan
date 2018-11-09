@@ -148,7 +148,7 @@ int shmifsrv_client_handle(struct shmifsrv_client*);
  * Internally, it verifies that the shared resources are in a healthy
  * state, forwards client- managed timers and so on.
  */
-void shmifsrv_tick(struct shmifsrv_client*);
+bool shmifsrv_tick(struct shmifsrv_client*);
 
 /*
  * Polling routine for pumping synchronization actions and determining
@@ -254,11 +254,10 @@ struct shmifsrv_abuffer {
 
 /*
  * [CRITICAL]
- * access the currently active video buffer slot in the client. If step is set,
+ * access the currently active video buffer slot in the client.
  * the buffer is returned to the client. The contents of the buffer are
  * a reference to shared memory, and should thus be explicitly copied out
- * before leaving critical. The buffer won't be unlocked until this function
- * have been called with step.
+ * before leaving critical.
  *
  * The [state] field of the returned structure will match vbuffer_status:
  * VBUFFER_OUTPUT - segment is configured for output, don't use this function.
@@ -270,7 +269,13 @@ struct shmifsrv_abuffer {
  * handle passing and accelerated. This server library does not currently
  * provide support functions for working with opaque handles.
  */
-struct shmifsrv_vbuffer shmifsrv_video(struct shmifsrv_client*, bool step);
+struct shmifsrv_vbuffer shmifsrv_video(struct shmifsrv_client*);
+
+/* [CRITICAL]
+ * Forward that the last known video buffer is no longer interesting and
+ * signal a release to the client
+ */
+void shmifsrv_video_step(struct shmifsrv_client*);
 
 /* [CRITICAL]
  * Copy out the currently active audio buffer slot in the client. This works
@@ -288,6 +293,12 @@ struct shmifsrv_vbuffer shmifsrv_video(struct shmifsrv_client*, bool step);
  */
 struct shmifsrv_abuffer shmifsrv_audio(
 	struct shmifsrv_client*, shmif_asample* dst, size_t dst_sz);
+
+/* [CRITICAL]
+ * Forward that the last known video buffer is no longer interesting and
+ * signal a release to the client
+ */
+void shmifsrv_audio_step(struct shmifsrv_client*);
 
 /*
  * [THREAD_UNSAFE]

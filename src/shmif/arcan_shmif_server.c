@@ -148,20 +148,6 @@ struct shmifsrv_client* shmifsrv_spawn_client(
 	return res;
 }
 
-bool shmifsrv_frameserver_tick(struct shmifsrv_client* cl)
-{
-/*
- * check:
- * shmifsrv_client_control_chld:
- *   sanity check:
- *    src->flags.alive, src->shm.ptr,
- *    src->shm.ptr->cookie == cookie
- * shmifsrv_client_validchild
- * shmifsrv_client_free on fail (though we just return false here)
- */
-	return false;
-}
-
 size_t shmifsrv_dequeue_events(
 	struct shmifsrv_client* cl, struct arcan_event* newev, size_t limit)
 {
@@ -332,21 +318,33 @@ void shmifsrv_set_protomask(struct shmifsrv_client* cl, unsigned mask)
 	cl->con->metamask = mask;
 }
 
+void shmifsrv_video_step(struct shmifsrv_client* cl)
+{
+/* signal that we're done with the buffer */
+	atomic_store_explicit(&cl->con->shm.ptr->vready, 0, memory_order_release);
+	arcan_sem_post(cl->con->vsync);
+
+/* If the frameserver has indicated that it wants a frame callback every time
+ * we consume. This is primarily for cases where a client needs to I/O mplex
+ * and the semaphores doesn't provide that */
+	if (cl->con->desc.hints & SHMIF_RHINT_VSIGNAL_EV){
+		platform_fsrv_pushevent(cl->con, &(struct arcan_event){
+			.category = EVENT_TARGET,
+			.tgt.ioevs[0].iv = 1
+		});
+	}
+}
+
+/*
+ * The reference implementation for this is really in engine/arcan_frameserver
+ * with the vframe and push_buffer implementations in particular. Some of the
+ * changes is that we need to manage fewer states, like the rz_ack control.
+ */
 struct shmifsrv_vbuffer shmifsrv_video(struct shmifsrv_client* cl, bool step)
 {
 	struct shmifsrv_vbuffer res = {0};
 	if (!cl || cl->status != READY)
 		return res;
-
-	res.flags.origo_ll = cl->con->desc.hints & SHMIF_RHINT_ORIGO_LL;
-	res.flags.ignore_alpha = cl->con->desc.hints & SHMIF_RHINT_IGNORE_ALPHA;
-	res.flags.subregion = cl->con->desc.hints & SHMIF_RHINT_SUBREGION;
-	res.flags.srgb = cl->con->desc.hints & SHMIF_RHINT_CSPACE_SRGB;
-	res.vpts = atomic_load(&cl->con->shm.ptr->vpts);
-	res.w = cl->con->desc.width;
-	res.h = cl->con->desc.height;
-
-/* samplerate, channels, vfthresh */
 
 	if (step){
 /* signal that we're done with the buffer */
@@ -365,6 +363,25 @@ struct shmifsrv_vbuffer shmifsrv_video(struct shmifsrv_client* cl, bool step)
 		}
 		return res;
 	}
+
+	res.flags.origo_ll = cl->con->desc.hints & SHMIF_RHINT_ORIGO_LL;
+	res.flags.ignore_alpha = cl->con->desc.hints & SHMIF_RHINT_IGNORE_ALPHA;
+	res.flags.subregion = cl->con->desc.hints & SHMIF_RHINT_SUBREGION;
+	res.flags.srgb = cl->con->desc.hints & SHMIF_RHINT_CSPACE_SRGB;
+	res.vpts = atomic_load(&cl->con->shm.ptr->vpts);
+	res.w = cl->con->desc.width;
+	res.h = cl->con->desc.height;
+
+/* vpending contains the latest region that was synched, so extract the ~vready
+ * mask to figure out which is the most recent buffer to work with in the case
+ * of 'n' buffering */
+	int vready = atomic_load_explicit(
+		&cl->con->shm.ptr->vready, memory_order_consume);
+	int vmask = ~atomic_load_explicit(
+		&cl->con->shm.ptr->vpending, memory_order_consume);
+
+	shmif_pixel* buf = cl->con->vbufs[vready];
+
 
 /*
  * copy the flags..
@@ -413,7 +430,7 @@ struct shmifsrv_abuffer shmifsrv_audio(
 	return res;
 }
 
-void shmifsrv_tick(struct shmifsrv_client* cl)
+bool shmifsrv_tick(struct shmifsrv_client* cl)
 {
 /* want the event to be queued after resize so the possible reaction (i.e.
 	bool alive = src->flags.alive && src->shm.ptr &&
@@ -432,6 +449,7 @@ void shmifsrv_tick(struct shmifsrv_client* cl)
 		}
 	}
  */
+	return true;
 }
 
 static int64_t timebase, c_ticks;

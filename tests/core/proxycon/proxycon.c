@@ -2,9 +2,8 @@
  * Simple shmif- proxy, as a skeleton for more advanced forms and for testing.
  *
  * missing:
- *  multiple subsegments
- *  multiprocessing
- *  accelerated handles
+ *  multiple subsegments (descrevents)
+ *  accelerated handles (just send fail atm.)
  *  output segments
  *  subprotocols
  */
@@ -45,7 +44,9 @@ static void proxy_client(struct shmifsrv_client* a)
 /* last, check if there's anything new with the buffers */
 
 	while (alive){
-		int sv = poll(fds, 2, 1000 / 15);
+		int left;
+		int tick = shmifsrv_monotonic_tick(&left);
+		int sv = poll(fds, 2, left);
 
 		if (sv < 0){
 			if (sv == -1 && errno != EAGAIN && errno != EINTR)
@@ -53,29 +54,35 @@ static void proxy_client(struct shmifsrv_client* a)
 			continue;
 		}
 
+		while(tick-- > 0){
+			alive = shmifsrv_tick(a);
+		}
+
 /* event from child, we need to reflect resize, and treat timers locally so
  * they have better accuracy */
-		if (sv && fds[0].revents){
-			struct arcan_event newev;
-			if (fds[0].revents != POLLIN){
-				alive = false;
-				continue;
+		struct arcan_event newev;
+		while (shmifsrv_dequeue_events(a, &newev, 1)){
+			if (arcan_shmif_descrevent(&newev)){
+				printf("ignored descrevent: %s\n", arcan_shmif_eventstr(&newev, NULL, 0));
 			}
-			while (shmifsrv_dequeue_events(a, &newev, 1)){
+			else {
+				printf("dequeue (in) -> %s\n", arcan_shmif_eventstr(&newev, NULL, 0));
 				arcan_shmif_enqueue(&b, &newev);
 			}
 		}
 
-/* events from parent, nothing special - unless the carry a descriptor */
-		if (sv && fds[1].revents){
-			struct arcan_event newev;
-			int sc;
-			while (( sc = arcan_shmif_poll(&b, &newev)) > 0){
+		int sc;
+		while (( sc = arcan_shmif_poll(&b, &newev)) > 0){
+			if (arcan_shmif_descrevent(&newev)){
+				printf("event parent rejected (%s)\n", arcan_shmif_eventstr(&newev, NULL, 0));
+				}
+			else {
+				printf("event parent -> child (%s)\n", arcan_shmif_eventstr(&newev, NULL, 0));
 				shmifsrv_enqueue_event(a, &newev, -1);
 			}
-			if (-1 == sc){
-				alive = false;
-			}
+		}
+		if (-1 == sc){
+			alive = false;
 		}
 
 		switch(shmifsrv_poll(a)){
@@ -84,10 +91,21 @@ static void proxy_client(struct shmifsrv_client* a)
 		case CLIENT_NOT_READY:
 /* do nothing */
 		break;
-		case CLIENT_VBUFFER_READY:
-			fprintf(stderr, "client got vbuffer\n");
-/* copy + release if possible */
+		case CLIENT_VBUFFER_READY:{
+			struct shmifsrv_vbuffer vbuf = shmifsrv_video(a, false);
+			if (!shmifsrv_enter(a))
+				goto out;
+
+/* details:
+ * buffer [raw pixels or others
+ * flags: origo_ll, ignore_alpha, subregion, srgb, hwhandles,
+ *        and hwhandles determine the passing strategy and
+ *        buffers communicate modifiers
+ */
+
 			shmifsrv_video(a, true);
+			shmifsrv_leave();
+		}
 		break;
 		case CLIENT_ABUFFER_READY:
 			fprintf(stderr, "client got abuffer\n");
@@ -99,6 +117,7 @@ static void proxy_client(struct shmifsrv_client* a)
 		}
 	}
 
+out:
 	fprintf(stderr, "cleanup up\n");
 	shmifsrv_free(a);
 	arcan_shmif_drop(&b);
