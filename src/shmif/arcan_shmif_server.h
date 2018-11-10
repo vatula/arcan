@@ -1,6 +1,6 @@
 /*
  Shmif- server library
- Copyright (c) 2017, Bjorn Stahl
+ Copyright (c) 2017-2018, Bjorn Stahl
  All rights reserved.
 
   Redistribution and use in source and binary forms,

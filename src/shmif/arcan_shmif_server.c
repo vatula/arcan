@@ -1,6 +1,8 @@
 #include "arcan_shmif.h"
 #include "arcan_shmif_server.h"
 #include <errno.h>
+#include <stdatomic.h>
+#include <math.h>
 
 /*
  * basic checklist:
@@ -18,7 +20,9 @@
  * engine/arcan_frameserver.c though.
  *
  * For that reason, we need to define some types that will actually never
- * really be used here, pending refactoring of the whole thing.
+ * really be used here, pending refactoring of the whole thing. In that refact.
+ * we should share all the code between the engine- side and the server lib -
+ * no reason for the two implementations.
  */
 typedef int shm_handle;
 struct arcan_aobj;
@@ -103,6 +107,7 @@ struct shmifsrv_client*
 	mode_t permission, int* fd, int* statuscode, uint32_t idtok)
 {
 	int sc;
+	shmifsrv_monotonic_tick(NULL);
 	struct shmifsrv_client* res = alloc_client();
 	if (!res)
 		return NULL;
@@ -340,29 +345,11 @@ void shmifsrv_video_step(struct shmifsrv_client* cl)
  * with the vframe and push_buffer implementations in particular. Some of the
  * changes is that we need to manage fewer states, like the rz_ack control.
  */
-struct shmifsrv_vbuffer shmifsrv_video(struct shmifsrv_client* cl, bool step)
+struct shmifsrv_vbuffer shmifsrv_video(struct shmifsrv_client* cl)
 {
 	struct shmifsrv_vbuffer res = {0};
 	if (!cl || cl->status != READY)
 		return res;
-
-	if (step){
-/* signal that we're done with the buffer */
-		atomic_store_explicit(&cl->con->shm.ptr->vready, 0, memory_order_release);
-		arcan_sem_post(cl->con->vsync);
-
-/* If the frameserver has indicated that it wants a frame callback every time
- * we consume. This is primarily for cases where a client needs to I/O mplex
- * and the semaphores doesn't provide that */
-		if (cl->con->desc.hints & SHMIF_RHINT_VSIGNAL_EV){
-			platform_fsrv_pushevent(cl->con, &(struct arcan_event){
-				.category = EVENT_TARGET,
-				.tgt.kind = TARGET_COMMAND_STEPFRAME,
-				.tgt.ioevs[0].iv = 1
-			});
-		}
-		return res;
-	}
 
 	res.flags.origo_ll = cl->con->desc.hints & SHMIF_RHINT_ORIGO_LL;
 	res.flags.ignore_alpha = cl->con->desc.hints & SHMIF_RHINT_IGNORE_ALPHA;
@@ -372,22 +359,26 @@ struct shmifsrv_vbuffer shmifsrv_video(struct shmifsrv_client* cl, bool step)
 	res.w = cl->con->desc.width;
 	res.h = cl->con->desc.height;
 
+/*
+ * should have a better way of calculating this taking all the possible fmts
+ * into account, becomes more relevant when we have different vchannel types.
+ */
+	res.stride = res.w * ARCAN_SHMPAGE_VCHANNELS;
+	res.pitch = res.w;
+
 /* vpending contains the latest region that was synched, so extract the ~vready
  * mask to figure out which is the most recent buffer to work with in the case
  * of 'n' buffering */
 	int vready = atomic_load_explicit(
 		&cl->con->shm.ptr->vready, memory_order_consume);
+	vready = (vready <= 0 || vready > cl->con->vbuf_cnt) ? 0 : vready - 1;
+
 	int vmask = ~atomic_load_explicit(
 		&cl->con->shm.ptr->vpending, memory_order_consume);
 
-	shmif_pixel* buf = cl->con->vbufs[vready];
+	res.buffer = cl->con->vbufs[vready];
+	struct arcan_shmif_region dirty = atomic_load(&cl->con->shm.ptr->dirty);
 
-
-/*
- * copy the flags..
- * struct arcan_shmif_region dirty = atomic_load(&shmpage->dirty);
- *
- */
 	return res;
 }
 
@@ -456,19 +447,35 @@ static int64_t timebase, c_ticks;
 int shmifsrv_monotonic_tick(int* left)
 {
 	int64_t now = arcan_timemillis();
-	int64_t base = c_ticks * ARCAN_TIMER_TICK;
+	int n_ticks = 0;
+
 	if (now < timebase)
 		timebase = now - (timebase - now);
-	int64_t delta = now - timebase - base;
+	int64_t frametime = now - timebase;
 
-	if (left){
-		*left = (c_ticks+1) * ARCAN_TIMER_TICK - now - base;
+	int64_t base = c_ticks * ARCAN_TIMER_TICK;
+	int64_t delta = frametime - base;
+
+	if (delta > ARCAN_TIMER_TICK){
+		n_ticks = delta / ARCAN_TIMER_TICK;
+
+/* safeguard against stalls or clock issues */
+		if (n_ticks > ARCAN_TICK_THRESHOLD){
+			shmifsrv_monotonic_rebase();
+			return shmifsrv_monotonic_tick(left);
+		}
+
+		c_ticks += n_ticks;
 	}
 
-	return (float) delta / (float) ARCAN_TIMER_TICK;
+	if (left)
+		*left = ARCAN_TIMER_TICK - delta;
+
+	return n_ticks;
 }
 
 void shmifsrv_monotonic_rebase()
 {
 	timebase = arcan_timemillis();
+	c_ticks = 0;
 }

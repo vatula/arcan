@@ -344,7 +344,12 @@ static int run_shmif_test(uint8_t* authk, size_t auth_sz, bool sp)
 			run_shmif_server(authk, auth_sz, "test", srvpipe[0], clpipe[1]);
 	}
 
-	close(STDERR_FILENO);
+#define STDERR_CHILD
+#ifdef STDERR_CHILD
+	fclose(stderr);
+	stderr = fopen("child.stderr", "w+");
+#else
+#endif
 	return sp ?
 		run_shmif_server(authk, auth_sz, "test", srvpipe[0], clpipe[1]) :
 		run_shmif_client(authk, auth_sz, clpipe[0], srvpipe[1]);
