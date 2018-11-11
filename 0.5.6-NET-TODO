@@ -1,19 +1,10 @@
 Networking changes for 0.5.6
 
 Time to start building the arcan_netproxy for real.
+For this batch, the following should be covered:
 
-The first version should be able to deal with 1:1 proxying
-of event data (via the eventpack/unpack function in shmif)
-without encryption or anything to that effect.
-
-Requirements:
-
-[ ] Write it in Rust
-[ ] Prepare (but don't finish) for monitoring that can
-    output using arcan_tui to give insight as to traffic,
-		source origins
-[ ] Have pipes-filter like data processing to allow
-    encryption
-[ ] Have pipes-filter like network I/O for the transition
-    to UTP or similar UDP based low-latency/high-throughput
-		protocols
+[x] event data over netpipe
+[ ] socket support to netpipe
+[ ] uncompressed video support
+[ ] video delta
+[ ] video compression

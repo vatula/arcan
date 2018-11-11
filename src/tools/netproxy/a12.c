@@ -1,12 +1,17 @@
 /*
- * Work in progress a12- state machine,
+ * Work in progress a12- state machine
+ *
  * [x] normal event transfer
  * [ ] uncompressed video transfer
+ * [ ] video compression
  * [ ] uncompressed audio transfer
  * [ ] aux. binary transfer
- * [ ] modify memcpy calls to actually write and shift to output
- * [ ] add compression / decompression
+ * [ ] audio compression
+ * [ ] compression parameter controls
  * [ ] proper MAC / stream cipher
+ * [ ] curve25519 management
+ * [ ] progressive multiplexed transfer
+ * [ ] multithreaded progressive transfer
  */
 
 #include <arcan_shmif.h>
@@ -14,6 +19,7 @@
 
 #include "a12.h"
 #include "blake2.h"
+#include "pack.h"
 #include <inttypes.h>
 #include <string.h>
 
@@ -58,22 +64,31 @@ enum {
 };
 
 static int header_sizes[] = {
-	MAC_BLOCK_SZ + 1,
+	MAC_BLOCK_SZ + 1, /* NO packet, just MAC + outer header */
 	CONTROL_PACKET_SIZE,
-	0, /* filled in at first open */
-	64, /* placeholder */
-	64, /* placeholder */
-	64, /* placeholder */
+	0, /* EVENT size is filled in at first open */
+	1 + 8 + 4, /* VIDEO partial: ch, stream, len */
+	1 + 8 + 4, /* AUDIO partial: ch, stream, len */
+	1 + 8 + 4, /* BINARY partial: ch, stream, len */
 	0
 };
 
-/*
- * Notes for dealing with A/W/B -
- *  need to add functions to set destination buffers for that
- *  immediately, and if there's any kind of recovery etc. function
- *  needed to accommodate the state transition in case of buffer
- *  invalidation.
- */
+enum video_postprocess_method {
+	POSTPROCESS_VIDEO_NONE,
+	POSTPROCESS_VIDEO_X264
+};
+
+struct video_frame {
+	uint32_t id;
+	size_t w, h;
+	size_t x, y;
+	uint32_t flags;
+	int postprocess;
+
+	uint8_t* inbuf;
+	size_t inbuf_sz;
+	size_t inbuf_pos;
+};
 
 struct a12_state {
 /* we need to prepend this when we build the next MAC */
@@ -91,7 +106,14 @@ struct a12_state {
 	size_t buf_ofs;
 
 /* multiple- channels over the same state tracker for subsegment handling */
-	struct arcan_shmif_cont* channels[1];
+	struct {
+		bool active;
+		struct arcan_shmif_cont* cont;
+		union {
+			struct video_frame vframe;
+		} unpack_state;
+	} channels[256];
+	int in_channel;
 
 /* fixed size incoming buffer as either the compressed decoders need to buffer
  * and request output store, or we have a known 'we need to decode this much' */
@@ -108,6 +130,8 @@ struct a12_state {
 
 /* when the channel has switched to a streamcipher, this is set to true */
 	bool in_encstate;
+
+	uint32_t canary;
 };
 
 static uint8_t* grow_array(uint8_t* dst, size_t* cur_sz, size_t new_sz)
@@ -126,16 +150,8 @@ static uint8_t* grow_array(uint8_t* dst, size_t* cur_sz, size_t new_sz)
 
 static void step_sequence(struct a12_state* S, uint8_t* outb)
 {
-	S->current_seqnr++;
-	outb[0] = (uint8_t)(S->current_seqnr >> 0);
-	outb[1] = (uint8_t)(S->current_seqnr >> 8);
-	outb[2] = (uint8_t)(S->current_seqnr >> 16);
-	outb[3] = (uint8_t)(S->current_seqnr >> 24);
-	outb[4] = (uint8_t)(S->current_seqnr >> 32);
-	outb[5] = (uint8_t)(S->current_seqnr >> 40);
-	outb[6] = (uint8_t)(S->current_seqnr >> 48);
-	outb[7] = (uint8_t)(S->current_seqnr >> 56);
-
+	pack_u64(S->current_seqnr++, outb);
+/* DBEUG: replace sequence with 's' */
 	for (size_t i = 0; i < 8; i++) outb[i] = 's';
 }
 
@@ -340,7 +356,37 @@ static void process_control(struct a12_state* S)
 	if (!process_mac(S))
 		return;
 
-/* crypto-FIXME: apply stream-cipher */
+/* ignore these two for now
+	uint64_t last_seen;
+	uint8_t entropy[8];
+ */
+
+	uint8_t channel = S->decode[16];
+	uint8_t command = S->decode[17];
+
+	switch(command){
+	case 0: break; /* HELLO */
+	case 1: break; /* SHUTDOWN */
+	case 2: break; /* ENC-NEG */
+	case 3: break; /* REKEY */
+	case 4: break; /* CANCEL-STREAM */
+ /* new vstream */
+	case 5:{
+		struct video_frame* vframe = &S->channels[channel].unpack_state.vframe;
+		unpack_u32(&vframe.id, S->decode[19]
+		vframe.id = unpack_32(
+	}
+	break; /* NEW CHANNEL */
+	case 6: break; /* FAILURE */
+	case 7:
+	break; /* VIDEO */
+	case 8: break; /* AUDIO */
+	case 9: break; /* BINARY */
+	default:
+		debug_print("(a12) unhandled control message");
+	break;
+	}
+
 	debug_print("(a12) decode control packet");
 	reset_state(S);
 }
@@ -354,7 +400,7 @@ static void process_event(struct a12_state* S,
 /* crypto-FIXME: apply stream-cipher */
 /* serialization-FIXME: proper unpack uint64_t */
 	struct arcan_event aev;
-	memcpy(&S->last_seen_seqnr, S->decode, sizeof(uint64_t));
+	unpack_u64(&S->last_seen_seqnr, S->decode);
 	if (-1 == arcan_shmif_eventunpack(
 		&S->decode[SEQUENCE_NUMBER_SIZE], S->decode_pos - SEQUENCE_NUMBER_SIZE, &aev)){
 		debug_print("(a12) broken event packet received");
@@ -365,12 +411,64 @@ static void process_event(struct a12_state* S,
 	reset_state(S);
 }
 
+/*
+ * We have an incoming video packet, first we need to match it to the
+ * channel that it represents (as we might get interleaved updates) and
+ * match the state we are building.
+ */
 static void process_video(struct a12_state* S)
 {
-/* FIXME: header-stage then frame-stage, decode into context based on channel */
-	if (S->channels[0]){
-		arcan_shmif_signal(S->channels[0], SHMIF_SIGVID);
+	debug_print("(a12) incoming video frame");
+	if (!process_mac(S))
+		return;
+
+	if (S->in_channel != -1){
+		uint64_t stream;
+		uint16_t frame_sz;
+		unpack_u64(&stream, &S->decode[1]);
+		unpack_u16(&frame_sz, &S->decode[9]);
+		S->in_channel = S->decode[0];
+		S->left = frame_sz;
+		return;
 	}
+
+	struct video_frame* cvf = &S->channels[S->in_channel].unpack_state.vframe;
+	if (!S->channels[S->in_channel].cont){
+		debug_print("(a12) data on unmapped channel");
+		reset_state(S);
+		return;
+	}
+
+/* post-processing / decoder? then just buffer */
+	size_t left = cvf->inbuf_sz - cvf->inbuf_pos;
+	if (cvf->postprocess != POSTPROCESS_VIDEO_NONE){
+		if (left >= S->decode_pos){
+			memcpy(&cvf->inbuf[cvf->inbuf_pos], S->decode, S->decode_pos);
+			cvf->inbuf_pos += S->decode_pos;
+
+			if (cvf->inbuf_sz == cvf->inbuf_pos){
+				debug_print("(a12) decode-buffer size reached");
+			}
+		}
+		else {
+			debug_print("(a12) overflow, stream length and packet size mismatch");
+		}
+		reset_state(S);
+		return;
+	}
+
+/* raw frame, just unpack into where we are in the context and signal --
+ * this does not correctly represent any padding in stride/pitch and just
+ * assumes correctly packed */
+	struct arcan_shmif_cont* cont = S->channels[S->in_channel].cont;
+	if (S->decode_pos + cvf->inbuf_pos <= cont->h * cont->stride){
+		memcpy(&cont->vidp[cvf->inbuf_pos], S->decode, S->decode_pos);
+		cvf->inbuf_pos += S->decode_pos;
+	}
+	else {
+		debug_print("(a12) overflow, stream length and packet size mismatch");
+	}
+
 	reset_state(S);
 }
 
@@ -397,7 +495,8 @@ void a12_set_destination(struct a12_state* S, struct arcan_shmif_cont* wnd, int 
 		return;
 	}
 
-	S->channels[0] = wnd;
+	S->channels[0].cont = wnd;
+	S->channels[0].active = false;
 }
 
 void
@@ -494,14 +593,30 @@ a12_channel_vframe(struct a12_state* S, struct shmifsrv_vbuffer* vb)
 	memset(outb, 'v', sizeof(outb));
 	step_sequence(S, outb);
 
+/* PROGRESSIVE -
+ * this is where we'd need actual multiplexing as large V frames will
+ * introduce additional input latency that we could work around */
+
+/* Output format:
+ * uint32 stream_id
+ * uint8 format
+ * uint16 x
+ * uint16 y
+ * uint16 w
+ * uint16 h
+ * uint8 render_flags
+ * uint32 frame_size
+ */
+
 /* dealing with each flag:
  * origo_ll - do the coversion in our own encode- stage
  * ignore_alpha - do nothing
  * subregion - feed as information to the delta encoder
  * srgb - info to encoder, other leave be
  * vpts - possibly add as feedback to a scheduler and if there is
- *        near-deadline data, send that first
- * w, h - use to detect and ack resize?
+ *        near-deadline data, send that first or if it has expired,
+ *        drop the frame. This is only a real target for game/decode
+ *        but that decision can be pushed to the caller.
  *
  * then we have the problem of the meta- area
  */

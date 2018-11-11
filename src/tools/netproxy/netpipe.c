@@ -1,7 +1,6 @@
 /*
  * Pipe-based implementation of the A12 protocol,
- * relying on pre-established secure channels and low
- * bandwidth demands.
+ * relying on pre-established secure channels and low bandwidth demands.
  */
 #include <arcan_shmif.h>
 #include <arcan_shmif_server.h>
@@ -106,13 +105,16 @@ static void server_mode(
 				alive = false;
 				continue;
 			}
-
 		}
 
 		struct arcan_event newev;
 		while (shmifsrv_dequeue_events(a, &newev, 1)){
 			trace("(srv) forward event: %s", arcan_shmif_eventstr(&newev, NULL, 0));
-			a12_channel_enqueue(ast, &newev);
+			if (arcan_shmif_descrevent(&newev)){
+				trace("(srv) ignoring descriptor passing event");
+			}
+			else
+				a12_channel_enqueue(ast, &newev);
 		}
 
 		switch(shmifsrv_poll(a)){
@@ -132,9 +134,9 @@ static void server_mode(
 	 };
 
  */
-				struct shmifsrv_vbuffer vb = shmifsrv_video(a, false);
+				struct shmifsrv_vbuffer vb = shmifsrv_video(a);
 				a12_channel_vframe(ast, &vb);
-				shmifsrv_video(a, true);
+				shmifsrv_video_step(a);
 			}
 			break;
 			case CLIENT_ABUFFER_READY:
@@ -298,7 +300,11 @@ static int run_shmif_client(
 			while (( sc = arcan_shmif_poll(&wnd, &newev)) > 0){
 				trace("(cl) incoming event: %s", arcan_shmif_eventstr(&newev, NULL, 0));
 /* FIXME: special consideration for subsegment channels */
-				a12_channel_enqueue(ast, &newev);
+				if (arcan_shmif_descrevent(&newev)){
+					trace("(cl) ignoring descripting passing event");
+				}
+				else
+					a12_channel_enqueue(ast, &newev);
 			}
 /* FIXME: send disconnect packet */
 			if (-1 == sc){

@@ -377,7 +377,7 @@ struct shmifsrv_vbuffer shmifsrv_video(struct shmifsrv_client* cl)
 		&cl->con->shm.ptr->vpending, memory_order_consume);
 
 	res.buffer = cl->con->vbufs[vready];
-	struct arcan_shmif_region dirty = atomic_load(&cl->con->shm.ptr->dirty);
+	res.region = atomic_load(&cl->con->shm.ptr->dirty);
 
 	return res;
 }

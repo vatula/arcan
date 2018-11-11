@@ -3,79 +3,74 @@
 This tool is the development sandbox for the arcan-net bridge used to link
 single clients over a network.
 
-DISCLAIMER: This is in an early stage and absolutely not production ready
-now or anytime soon. Treat it like a sample of what is to come during the
-0.6- series of releases - the real version will depend on the rendering
-protocol that will be derived from a packing format of the lua API, the
-serialization format used in TUI and A/V encoding formats to be decided
-(likely h264-lowlatency for game content, HEVC for bufferable media,
-zstd for uncompressed blob transfers, Open3DGC for 3dvobj data etc).
+DISCLAIMER: This is in an early stage and absolutely not production ready now
+or anytime soon. Treat it like a sample of what is to come during the 0.6-
+series of releases - the real version will depend on the rendering protocol
+that will be derived from a packing format of the lua API, the serialization
+format used in TUI and A/V encoding formats to be decided (likely
+h264-lowlatency for game content, HEVC for bufferable media, zstd for
+uncompressed blob transfers, Open3DGC for 3dvobj data etc).
 
-There are two modes to building this tool, a 'simple' (arcan-netpipe)
-and the real (arcan-net).
+There are two modes to building this tool, a 'simple' (arcan-netpipe) and
+the "real" but defunct (arcan-net).
 
-Arcan-netpipe uses some unspecified channel for transmission, e.g.
-piping via SSH and so on. As such, is has rather low performance and
-the communication is entirely unprotected. It is valuable for testing,
-development and debugging/fault-injection - and for quick and dirty
-low- bandwidth bridging. It can also only bridge a single client per
-instance.
+Arcan-netpipe uses some unspecified channel for transmission, e.g. piping via
+SSH and so on. As such, is has rather low performance and the communication is
+entirely unprotected. It is valuable for testing, development and
+debugging/fault-injection - and for quick and dirty low- bandwidth bridging. It
+can also only bridge a single client per instance.
+
+Arcan-net is just stubs/defunct experiments at the moment, the intention is to
+build on UDT as a low-latency UDP based transport but will not be given any
+consideration until netpipe is fully working as the a12- state machine manager
+need to be really robust before going further.
 
 # Use
 
-Arcan netpipe version (testing example):
+Arcan netpipe version (testing example, act as a MiM proxy):
 
-     mkfifo fifo
-     cat fifo | arcan-netpipe -c test | arcan-netpipe -s > fifo
+    ./arcan-netpipe -t &
      ARCAN_CONNPATH=test afsrv_terminal
-
-On the host local to the arcan instance where the client should originate
-from, run arcan-net in listening mode like this:
-
-    ./arcan-net -s authk.file dst-server dst-port
-
-On the host where arcan is running as a display server, where the client
-destination is, run arcan-net in server-mode like this:
-
-    ./arcan-net -c authk.file local-port
-
-This requires a pre-existing ARCAN\_CONNPATH to the local connection point
-that connections should be bridged over.
 
 # Todo
 
-This subproject will stretch until the end of the 0.6 series topic, with
-some sharing likely to be done with the afsrv\_net (i.e. the underlying
-protocol, a12, used along with some service discovery feature and better
-scripting API integration).
+This subproject will stretch until the end of the 0.6 series topic, with some
+sharing likely to be done with the afsrv\_net (i.e. the underlying protocol,
+and state machine, a12, used along with some service discovery feature and
+better scripting API integration).
 
 Milestone 1 - basic features (0.5.x)
 
-- [ ] Basic API
-- [ ] Control
-- [ ] Uncompressed Video / Video delta
+- [x] Basic API
+- [x] Control
+- [x] Netpipe working
+- [x] Uncompressed Video / Video delta
 - [ ] Uncompressed Audio / Audio delta
+- [ ] Compressed Video
 - [ ] Raw binary descriptor transfers
-- [ ] Netpipe working
+- [ ] Subsegments
 
 Milestone 2 - closer to useful (0.6.x)
 
-- [ ] basic h264 lowlatency
+- [ ] Better / source specific compression
 - [ ] TUI- text channel
-- [ ] subchannel multiplexing
+- [ ] Data multiplexing
+- [ ] Progressive encoding
+- [ ] Accelerated encoding of gpu-handles
+- [ ] Traffic monitoring tools
 - [ ] UDT based carrier (full- proxy client)
-- [ ] dealing with zero-copy buffer handles
 
 Milestone 3 - big stretch (0.6.x)
 
 - [ ] curve25519 key exchange
-- [ ] stream-ciper
-- [ ] rekeying
+- [ ] Stream-ciper
 - [ ] 'ALT' arcan-lwa interfacing
-- [ ] HEVC
 - [ ] ZSTD
 - [ ] Open3DGC
-- [ ] congestion control / dynamic encoding parameters
+- [ ] Congestion control / dynamic encoding parameters
+- [ ] Side-channel Resilience
+- [ ] Local discovery Mechanism
+- [ ] Merge into arcan-net
 
 # Security/Safety
 
@@ -87,8 +82,7 @@ The only required part right now is that there is a shared authentication key
 file (0..64 bytes) that has been preshared over some secure channel, ssh is a
 good choice. This key is used for building individual packet MACs.
 
-ALL DATA IS BEING SENT IN PLAINTEXT,
-ANYONE ON THE NETWORK CAN SEE WHAT YOU DO.
+ALL DATA IS BEING SENT IN PLAINTEXT, ANYONE ON THE NETWORK CAN SEE WHAT YOU DO.
 
 # Protocol
 
@@ -98,7 +92,9 @@ transport.
 
 Each arcan segment correlates to a 'channel' that can be multiplexed over
 one of these transports, with a sequence number used as a synchronization
-primitive for re-linearization.
+primitive for re-linearization. For each channel, a number of streams can
+be defined, each with a unique 32-bit identifier. Multiple streams can be
+in flight at the same time, and can be dynamically cancelled.
 
 Encryption is built on preauthenticated curve25519 with blake2-aes128-ctr
 for MAC and cipher. Each message begins with a 16 byte MAC, keyed with the
@@ -141,10 +137,10 @@ message used to mess with side-channel analysis for cases where bandwidth
 is a lesser concern than security.
 
 ## Control (1)
-- last-seen seqnr : uint64
-- entropy : uint8[8]
-- channel-id : uint8
-- command : uint8
+- [0..7]    last-seen seqnr : uint64
+- [8..15]   entropy : uint8[8]
+- [16]      channel-id : uint8
+- [17]      command : uint8
 
 The last-seen are used both as a timing channel and to determine drift.
 If the two sides start drifting outside a certain window, measures to reduce
@@ -197,16 +193,16 @@ needed to initiate a new channel as part of a subsegment setup.
 - segkind : uint8
 
 ### command - 7, define vstream
-- stream-id: uint32
-- format: uint8
-- surfacew: uint16
-- surfaceh: uint16
-- startx: uint16 (0..outw-1)
-- starty: uint16 (0..outh-1)
-- framew: uint16 (outw-startx + framew < outw)
-- frameh: uint16 (outh-starty + frameh < outh)
-- dataflags: uint8
-- length: uint32
+- [19..22] : stream-id: uint32
+- [23    ] : format: uint8
+- [24..25] : surfacew: uint16
+- [26..27] : surfaceh: uint16
+- [28..29] : startx: uint16 (0..outw-1)
+- [30..31] : starty: uint16 (0..outh-1)
+- [32..33] : framew: uint16 (outw-startx + framew < outw)
+- [34..35] : frameh: uint16 (outh-starty + frameh < outh)
+- [36    ] : dataflags: uint8
+- [37..40] : length: uint32
 
 This defines a new video stream frame. The length- field covers how many bytes
 that need to be buffered for the data to be decoded. This can be chunked up

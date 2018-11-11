@@ -26,29 +26,29 @@ find_package(Sanitizers REQUIRED)
 
 include(ExternalProject)
 
-ExternalProject_Add(udt
-	SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/udt"
-	UPDATE_COMMAND ""
-	GIT_REPOSITORY  "https://github.com/letoram/UDT"
-	UPDATE_COMMAND ""
-	PATCH_COMMAND ""
-	INSTALL_COMMAND ""
-	LOG_DOWNLOAD 1
-	LOG_UPLOAD 1
-	LOG_CONFIGURE 1
-	LOG_BUILD 1
-	LOG_TEST 1
-	LOG_INSTALL 1
-	-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
-	-DMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
-	-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-	-DCMAKE_INSTALL_PREFIX=${CMAKE_CURRENT_BINARY_DIR}
-	-DLIBTYPE=STATIC
-)
+#ExternalProject_Add(udt
+#	SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/udt"
+#	UPDATE_COMMAND ""
+#	GIT_REPOSITORY  "https://github.com/letoram/UDT"
+#	UPDATE_COMMAND ""
+#	PATCH_COMMAND ""
+#	INSTALL_COMMAND ""
+#	LOG_DOWNLOAD 1
+#	LOG_UPLOAD 1
+#	LOG_CONFIGURE 1
+#	LOG_BUILD 1
+#	LOG_TEST 1
+#	LOG_INSTALL 1
+#	-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+#	-DMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+#	-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+#	-DCMAKE_INSTALL_PREFIX=${CMAKE_CURRENT_BINARY_DIR}
+#	-DLIBTYPE=STATIC
+#)
 
 include_directories(
 	${ARCAN_SHMIF_INCLUDE_DIR}
-	${CMAKE_CURRENT_BINARY_DIR}/udt/src
+	#	${CMAKE_CURRENT_BINARY_DIR}/udt/src
 )
 
 SET(LIBRARIES
@@ -66,16 +66,16 @@ set(SOURCES
 
 add_executable( arcan-netpipe ${SOURCES} netpipe.c)
 add_executable( arcan-net ${SOURCES} netproxy.cpp)
-add_dependencies( arcan-net udt )
+#add_dependencies( arcan-net udt )
 add_sanitizers( arcan-netpipe )
 add_sanitizers( arcan-net )
 
 set_property(TARGET arcan-net PROPERTY CXX_STANDARD 11)
 set_property(TARGET arcan-netpipe PROPERTY C_STANDARD 11)
 
- target_link_libraries(arcan-net ${LIBRARIES}
-	${CMAKE_CURRENT_BINARY_DIR}/udt-prefix/src/udt-build/libudt.a
-)
+# target_link_libraries(arcan-net ${LIBRARIES}
+#	${CMAKE_CURRENT_BINARY_DIR}/udt-prefix/src/udt-build/libudt.a
+#)
 target_link_libraries(arcan-netpipe ${LIBRARIES})
 
 install(TARGETS
