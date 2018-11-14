@@ -257,8 +257,6 @@ void arcan_event_queuetransfer(arcan_evctx* dstqueue, arcan_evctx* srcqueue,
 		if (arcan_event_poll(srcqueue, &inev) == 0)
 			break;
 
-		printf("transfer: %s\n", arcan_shmif_eventstr(&inev, NULL, 0));
-
 /* ioevents have special behavior as the routed path (via frameserver
  * callback or global event handler) can be decided here */
 		if (inev.category == EVENT_IO && tgt){

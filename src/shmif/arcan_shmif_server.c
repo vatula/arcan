@@ -342,6 +342,7 @@ void shmifsrv_video_step(struct shmifsrv_client* cl)
 	if (cl->con->desc.hints & SHMIF_RHINT_VSIGNAL_EV){
 		platform_fsrv_pushevent(cl->con, &(struct arcan_event){
 			.category = EVENT_TARGET,
+			.tgt.kind = TARGET_COMMAND_STEPFRAME,
 			.tgt.ioevs[0].iv = 1
 		});
 	}
@@ -406,6 +407,11 @@ bool shmifsrv_process_event(struct shmifsrv_client* cl, struct arcan_event* ev)
 				.category = EVENT_TARGET,
 				.tgt.kind = TARGET_COMMAND_BUFFER_FAIL
 			}, -1);
+			if (cl->con->vstream.handle > 0){
+				close(cl->con->vstream.handle);
+				cl->con->vstream.handle = -1;
+			}
+			cl->con->vstream.handle = arcan_fetchhandle(cl->con->dpipe, false);
 			return true;
 		break;
 		case EVENT_EXTERNAL_CLOCKREQ:

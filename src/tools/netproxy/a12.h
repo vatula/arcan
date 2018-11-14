@@ -109,9 +109,15 @@ a12_channel_enqueue(struct a12_state*, struct arcan_event*);
 /*
  * forward a vbuffer from shm
  */
+enum a12_vframe_method {
+	VFRAME_METHOD_NORMAL,
+	VFRAME_METHOD_RAW_NOALPHA,
+	VFRAME_METHOD_RAW_RGB565,
+	VFRAME_METHOD_DPNG
+};
+
 struct a12_vframe_opts {
-	bool skip_alpha;
-	bool rgb565;
+	enum a12_vframe_method method;
 };
 
 /* Enqueue a video frame as part of the specified channel */

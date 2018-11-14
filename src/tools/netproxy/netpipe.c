@@ -6,9 +6,11 @@
 #include <arcan_shmif_server.h>
 #include <errno.h>
 #include <unistd.h>
+#include <signal.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <sys/wait.h>
 #include "a12.h"
 
 static const short c_inev = POLLIN | POLLERR | POLLNVAL | POLLHUP;
@@ -98,14 +100,14 @@ static void server_mode(
 		}
 
 		if (sv && fds[0].revents){
-			if (!(fds[0].revents & POLLIN)){
+			if (fds[0].revents & (~POLLIN)){
 				alive = false;
 				continue;
 			}
 		}
 
 		if (np == 3 && sv && fds[2].revents){
-			if (!(fds[2].revents & POLLOUT)){
+			if (fds[2].revents & (~POLLOUT)){
 				alive = false;
 				continue;
 			}
@@ -113,7 +115,7 @@ static void server_mode(
 
 /* STDIN - update a12 state machine */
 		if (sv && fds[1].revents){
-			if (!(fds[1].revents & POLLIN)){
+			if (fds[1].revents & (~POLLIN)){
 				alive = false;
 				continue;
 			}
@@ -144,8 +146,8 @@ static void server_mode(
 		int pv;
 		while ((pv = shmifsrv_poll(a)) != CLIENT_NOT_READY){
 			if (pv == CLIENT_DEAD){
-/* the descriptor will be gone so next poll will fail */
-				break;
+				alive = false;
+				continue;
 			}
 			if (pv & CLIENT_VBUFFER_READY){
 	/* copy + release if possible,
@@ -156,13 +158,14 @@ static void server_mode(
  */
 				struct shmifsrv_vbuffer vb = shmifsrv_video(a);
 
-
 /*
  * Here we should add a backpressure / throughput / ... based method for
  * determining if we release the frame back in the wild or not, use extra
  * time to compress and so on
  */
-				a12_channel_vframe(ast, 0, &vb, (struct a12_vframe_opts){});
+				a12_channel_vframe(ast, 0, &vb, (struct a12_vframe_opts){
+					.method = VFRAME_METHOD_RAW_RGB565
+				});
 				shmifsrv_video_step(a);
 			}
 			if (pv & CLIENT_ABUFFER_READY){
@@ -222,7 +225,8 @@ static int run_shmif_server(
 /* build the a12 state and hand it over to the main loop */
 				server_mode(cl, a12_channel_open(authk, auth_sz), fdin, fdout);
 			}
-			else{
+
+			if (pfd.revents & (~POLLIN)){
 				trace("(srv) poll failed, rebuilding");
 				shmifsrv_free(cl);
 			}
@@ -325,14 +329,14 @@ static int run_shmif_client(
 		}
 
 		if (np == 3 && sv && fds[2].revents){
-			if (!(fds[2].revents & POLLOUT)){
+			if ((fds[2].revents & (~POLLOUT))){
 				alive = false;
 				continue;
 			}
 		}
 
 		if (sv && fds[0].revents){
-			if (!(fds[0].revents & POLLIN)){
+			if ((fds[0].revents & (~POLLIN))){
 				alive = false;
 				continue;
 			}
@@ -380,8 +384,18 @@ static int run_shmif_client(
 	return EXIT_SUCCESS;
 }
 
+
+static int killpipe[] = {-1, -1};
+static void test_handler()
+{
+	wait(NULL);
+	close(killpipe[0]);
+	close(killpipe[1]);
+}
+
 static int run_shmif_test(uint8_t* authk, size_t auth_sz, bool sp)
 {
+	signal(SIGCHLD, test_handler);
 	int clpipe[2];
 	int srvpipe[2];
 
@@ -390,10 +404,13 @@ static int run_shmif_test(uint8_t* authk, size_t auth_sz, bool sp)
 
 /* just ugly- sleep and assume that the server has been setup */
 	if (fork() > 0){
-		sleep(1);
-		return sp ?
-			run_shmif_client(authk, auth_sz, clpipe[0], srvpipe[1]) :
-			run_shmif_server(authk, auth_sz, "test", srvpipe[0], clpipe[1]);
+		if (sp){
+//			close(clpipe[1]); close(srvpipe[0]);
+			while (1)
+				run_shmif_client(authk, auth_sz, clpipe[0], srvpipe[1]);
+		}
+//		close(clpipe[0]); close(srvpipe[1]);
+		return run_shmif_server(authk, auth_sz, "test", srvpipe[0], clpipe[1]);
 	}
 
 #define STDERR_CHILD
@@ -402,8 +419,14 @@ static int run_shmif_test(uint8_t* authk, size_t auth_sz, bool sp)
 	stderr = fopen("child.stderr", "w+");
 #else
 #endif
-	return sp ?
-		run_shmif_server(authk, auth_sz, "test", srvpipe[0], clpipe[1]) :
+	if (sp){
+		close(clpipe[0]); close(srvpipe[1]);
+		killpipe[0] = srvpipe[0]; killpipe[1] = clpipe[1];
+		return run_shmif_server(authk, auth_sz, "test", srvpipe[0], clpipe[1]);
+	}
+	close(clpipe[1]); close(srvpipe[0]);
+	killpipe[0] = clpipe[0]; killpipe[1] = srvpipe[1];
+	while (1)
 		run_shmif_client(authk, auth_sz, clpipe[0], srvpipe[1]);
 }
 

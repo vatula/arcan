@@ -10,12 +10,12 @@
 #include "a12.h"
 #include "blake2.h"
 #include "pack.h"
+#include "miniz/miniz.h"
+
 #include <inttypes.h>
 #include <string.h>
 #include <math.h>
 
-/* Only used for quick logging, for compression we use miniz we a
- * possible xor- delta prepass */
 #ifdef LOG_FRAME_OUTPUT
 #define STB_IMAGE_WRITE_STATIC
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -88,17 +88,8 @@ enum video_postprocess_method {
 	POSTPROCESS_VIDEO_NONE = 0,
 	POSTPROCESS_VIDEO_RGB,
 	POSTPROCESS_VIDEO_RGB565,
-/*
- * _PNG
- * AV1
- */
-/*
- * Xor and RLE. Row based. First two bits in every row sets start state:
- * 0 : raw full row
- * 1 : xor raw format
- * 2 : rle format
- */
-	POSTPROCESS_VIDEO_XRLE,
+	POSTPROCESS_VIDEO_DMINIZ,
+	POSTPROCESS_VIDEO_MINIZ,
 	POSTPROCESS_VIDEO_H264
 };
 
@@ -118,6 +109,11 @@ struct video_frame {
 	* decompression postprocessing, avoid 'zip-bombing' */
 	uint32_t expanded_sz;
 	size_t row_left;
+	size_t out_pos;
+
+	uint8_t pxbuf[4];
+	uint8_t carry;
+
 	/* bytes left on current row for raw-dec */
 };
 
@@ -143,6 +139,10 @@ struct a12_state {
 		union {
 			struct video_frame vframe;
 		} unpack_state;
+
+/* encoding (recall, both sides can actually do this) */
+		struct shmifsrv_vbuffer acc;
+		uint8_t* compression;
 	} channels[256];
 	int in_channel;
 
@@ -211,23 +211,28 @@ static void step_sequence(struct a12_state* S, uint8_t* outb)
  * descriptor.
  */
 static void append_outb(
-	struct a12_state* S, uint8_t type, uint8_t* out, size_t out_sz)
+	struct a12_state* S, uint8_t type, uint8_t* out, size_t out_sz,
+	uint8_t* prepend, size_t prepend_sz)
 {
 /* this means we can just continue our happy stream-cipher and apply to our
  * outgoing data */
 	if (S->in_encstate){
-/* cipher_update(&S->out_cstream, out, out_sz) */
+/*
+ * cipher_update(&S->out_cstream, prepend, prepend_sz);
+ * cipher_update(&S->out_cstream, out, out_sz)
+ */
 	}
 
 /* begin a new MAC, chained on our previous one
 	blake2bp_state mac_state = S->mac_init;
 	blake2bp_update(&mac_state, S->last_mac_out, MAC_BLOCK_SZ);
 	blake2bp_update(&mac_state, &type, 1);
+	blake2bp_update(&mac_state, prepend, prepend_sz);
 	blake2bp_update(&mac_state, out, out_sz);
  */
 
 /* grow write buffer if the block doesn't fit */
-	size_t required = S->buf_ofs + MAC_BLOCK_SZ + out_sz + 1;
+	size_t required = S->buf_ofs + MAC_BLOCK_SZ + out_sz + 1 + prepend_sz;
 
 	S->bufs[S->buf_ind] = grow_array(
 		S->bufs[S->buf_ind],
@@ -258,13 +263,18 @@ static void append_outb(
 /* our packet type */
 	dst[S->buf_ofs++] = type;
 
+/* any possible prepend-to-data block */
+	if (prepend_sz){
+		memcpy(&dst[S->buf_ofs], prepend, prepend_sz);
+		S->buf_ofs += prepend_sz;
+	}
+
 /* and our data block, this costs us an extra copy which isn't very nice -
  * might want to set a target descriptor immediately for some uses here,
  * the problem is proper interleaving of packets while respecting kernel
  * buffer behavior */
 	memcpy(&dst[S->buf_ofs], out, out_sz);
 	S->buf_ofs += out_sz;
-	debug_print("added %zu bytes, @%zu", out_sz, S->buf_ofs);
 }
 
 static void reset_state(struct a12_state* S)
@@ -339,7 +349,7 @@ struct a12_state* a12_channel_open(uint8_t* authk, size_t authk_sz)
 	outb[17] = 0;
 
 	debug_print("channel open, add control packet");
-	append_outb(S, STATE_CONTROL_PACKET, outb, CONTROL_PACKET_SIZE);
+	append_outb(S, STATE_CONTROL_PACKET, outb, CONTROL_PACKET_SIZE, NULL, 0);
 
 	return S;
 }
@@ -484,12 +494,31 @@ static void command_videoframe(struct a12_state* S)
 		vframe->postprocess == POSTPROCESS_VIDEO_RGB565 ||
 		vframe->postprocess == POSTPROCESS_VIDEO_RGB){
 		vframe->row_left = vframe->w;
-		vframe->inbuf_pos = vframe->y * cont->pitch + vframe->x;
+		vframe->out_pos = vframe->y * cont->pitch + vframe->x;
 		debug_print(
 			"row-length: %zu at buffer pos %"PRIu32, vframe->row_left, vframe->inbuf_pos);
 	}
 	else {
-		debug_print("unhandled vframe method: %"PRIu8, vframe->postprocess);
+		if (vframe->expanded_sz > vframe->w * vframe->h * sizeof(shmif_pixel)){
+			vframe->commit = 255;
+			debug_print("incoming frame exceeding reasonable constraints");
+			return;
+		}
+		if (vframe->inbuf_sz > vframe->expanded_sz){
+			vframe->commit = 255;
+			debug_print("incoming buffer expands to less than target");
+			return;
+		}
+
+		vframe->out_pos = vframe->y * cont->pitch + vframe->x;
+		vframe->inbuf_pos = 0;
+		vframe->inbuf = malloc(vframe->inbuf_sz);
+		if (!vframe->inbuf){
+			debug_print("couldn't allocate intermediate buffer store");
+			return;
+		}
+		vframe->row_left = vframe->w;
+		debug_print("compressed buffer in\n");
 	}
 }
 
@@ -553,6 +582,121 @@ static void process_event(struct a12_state* S,
 	reset_state(S);
 }
 
+static int video_miniz(const void* buf, int len, void* user)
+{
+	struct a12_state* S = user;
+	struct video_frame* cvf = &S->channels[S->in_channel].unpack_state.vframe;
+	struct arcan_shmif_cont* cont = S->channels[S->in_channel].cont;
+	const uint8_t* inbuf = buf;
+
+	if (!cont || len > cvf->expanded_sz){
+		debug_print("decompression resulted in data overcommit");
+		return 0;
+	}
+
+/* we have a 1..4 byte spill from a previous call so we need to have
+ * a 1-px buffer that we populate before packing */
+	if (cvf->carry){
+		for (size_t i = 4 - cvf->carry; i < 4; i++){
+			cvf->pxbuf[i] = *inbuf++;
+			len--;
+		}
+		cont->vidp[cvf->out_pos++] =
+			SHMIF_RGBA(cvf->pxbuf[0], cvf->pxbuf[1], cvf->pxbuf[2], cvf->pxbuf[3]);
+
+		cvf->row_left--;
+		if (cvf->row_left == 0){
+			cvf->out_pos -= cvf->w;
+			cvf->out_pos += cont->pitch;
+			cvf->row_left = cvf->w;
+		}
+		cvf->carry = 0;
+	}
+
+/* pixel-aligned fill/unpack, same as everywhere else */
+	size_t npx = (len / 4) * 4;
+	for (size_t i = 0; i < npx; i += 4){
+		cont->vidp[cvf->out_pos++] =
+			SHMIF_RGBA(inbuf[i], inbuf[i+1], inbuf[i+2], inbuf[i+3]);
+
+			cvf->row_left--;
+			if (cvf->row_left == 0){
+				cvf->out_pos -= cvf->w;
+				cvf->out_pos += cont->pitch;
+				cvf->row_left = cvf->w;
+			}
+	}
+
+/* we need to account for len bytes not aligning */
+	cvf->expanded_sz -= npx;
+	if (len - npx){
+		cvf->carry = 0;
+		for (size_t i = 0; i < len - npx; i++){
+			cvf->pxbuf[cvf->carry++] = inbuf[npx + i];
+		}
+	}
+
+	return 1;
+}
+
+/* same as video_miniz, but the write operation is now ^= */
+static int video_dminiz(const void* buf, int len, void* user)
+{
+	struct a12_state* S = user;
+	struct video_frame* cvf = &S->channels[S->in_channel].unpack_state.vframe;
+	struct arcan_shmif_cont* cont = S->channels[S->in_channel].cont;
+	const uint8_t* inbuf = buf;
+
+	if (!cont || len > cvf->expanded_sz){
+		debug_print("decompression resulted in data overcommit");
+		return 0;
+	}
+
+/* we have a 1..4 byte spill from a previous call so we need to have
+ * a 1-px buffer that we populate before packing */
+	if (cvf->carry){
+		for (size_t i = 4 - cvf->carry; i < 4; i++){
+			cvf->pxbuf[i] = *inbuf++;
+			len--;
+		}
+		cont->vidp[cvf->out_pos++] ^=
+			SHMIF_RGBA(cvf->pxbuf[0], cvf->pxbuf[1], cvf->pxbuf[2], cvf->pxbuf[3]);
+
+		cvf->row_left--;
+		if (cvf->row_left == 0){
+			cvf->out_pos -= cvf->w;
+			cvf->out_pos += cont->pitch;
+			cvf->row_left = cvf->w;
+		}
+		cvf->carry = 0;
+	}
+
+/* pixel-aligned fill/unpack, same as everywhere else */
+	size_t npx = (len / 4) * 4;
+	for (size_t i = 0; i < npx; i += 4){
+		cont->vidp[cvf->out_pos++] ^=
+			SHMIF_RGBA(inbuf[i], inbuf[i+1], inbuf[i+2], inbuf[i+3]);
+
+			cvf->row_left--;
+			if (cvf->row_left == 0){
+				cvf->out_pos -= cvf->w;
+				cvf->out_pos += cont->pitch;
+				cvf->row_left = cvf->w;
+			}
+	}
+
+/* we need to account for len bytes not aligning */
+	cvf->expanded_sz -= npx;
+	if (len - npx){
+		cvf->carry = 0;
+		for (size_t i = 0; i < len - npx; i++){
+			cvf->pxbuf[cvf->carry++] = inbuf[npx + i];
+		}
+	}
+
+	return 1;
+}
+
 /*
  * We have an incoming video packet, first we need to match it to the channel
  * that it represents (as we might get interleaved updates) and match the state
@@ -560,7 +704,6 @@ static void process_event(struct a12_state* S,
  */
 static void process_video(struct a12_state* S)
 {
-	debug_print("incoming video frame (ch: %d)", S->in_channel);
 	if (!process_mac(S))
 		return;
 
@@ -578,6 +721,7 @@ static void process_video(struct a12_state* S)
 /* the 'video_frame' structure for the current channel (segment) tracks
  * decode buffer etc. for the current stream */
 	struct video_frame* cvf = &S->channels[S->in_channel].unpack_state.vframe;
+	struct arcan_shmif_cont* cont = S->channels[S->in_channel].cont;
 	if (!S->channels[S->in_channel].cont){
 		debug_print("data on unmapped channel");
 		reset_state(S);
@@ -585,9 +729,12 @@ static void process_video(struct a12_state* S)
 	}
 
 /* postprocessing that requires an intermediate decode buffer before pushing */
-	if (cvf->postprocess == POSTPROCESS_VIDEO_H264){
+	if (
+		cvf->postprocess == POSTPROCESS_VIDEO_H264 ||
+		cvf->postprocess == POSTPROCESS_VIDEO_MINIZ ||
+		cvf->postprocess == POSTPROCESS_VIDEO_DMINIZ
+	){
 		size_t left = cvf->inbuf_sz - cvf->inbuf_pos;
-		debug_print("compressed video-frame left: %zu", left);
 
 		if (left >= S->decode_pos){
 			memcpy(&cvf->inbuf[cvf->inbuf_pos], S->decode, S->decode_pos);
@@ -603,7 +750,29 @@ static void process_video(struct a12_state* S)
 		}
 
 		if (left == 0){
-			debug_print("finished, decode");
+			if (cvf->postprocess == POSTPROCESS_VIDEO_MINIZ){
+				size_t inbuf_pos = cvf->inbuf_pos;
+				tinfl_decompress_mem_to_callback(
+					cvf->inbuf, &inbuf_pos, video_miniz, S, 0);
+				free(cvf->inbuf);
+				cvf->carry = 0;
+				if (cvf->commit && cvf->commit != 255){
+					arcan_shmif_signal(cont, SHMIF_SIGVID);
+				}
+			}
+			else if (cvf->postprocess == POSTPROCESS_VIDEO_DMINIZ){
+				size_t inbuf_pos = cvf->inbuf_pos;
+				tinfl_decompress_mem_to_callback(
+					cvf->inbuf, &inbuf_pos, video_dminiz, S, 0);
+				free(cvf->inbuf);
+				cvf->carry = 0;
+				if (cvf->commit && cvf->commit != 255){
+					arcan_shmif_signal(cont, SHMIF_SIGVID);
+				}
+			}
+			else {
+				debug_print("unhandled unpack method %d", cvf->postprocess);
+			}
 		}
 
 		reset_state(S);
@@ -626,28 +795,26 @@ static void process_video(struct a12_state* S)
 /* raw frame types, the implementations and variations are so small that
  * we can just do it here - no need for the more complex stages like for
  * 264, ... */
-	struct arcan_shmif_cont* cont = S->channels[S->in_channel].cont;
 	if (cvf->postprocess == POSTPROCESS_VIDEO_NONE){
-		debug_print("postprocess(raw@4): %"PRIu16, S->decode_pos);
 		for (size_t i = 0; i < S->decode_pos; i += 4){
-			cont->vidp[cvf->inbuf_pos++] = SHMIF_RGBA(
+			cont->vidp[cvf->out_pos++] = SHMIF_RGBA(
 				S->decode[i+0], S->decode[i+1], S->decode[i+2], S->decode[i+3]);
 			cvf->row_left--;
 			if (cvf->row_left == 0){
-				cvf->inbuf_pos -= cvf->w;
-				cvf->inbuf_pos += cont->pitch;
+				cvf->out_pos -= cvf->w;
+				cvf->out_pos += cont->pitch;
 				cvf->row_left = cvf->w;
 			}
 		}
 	}
 	else if (cvf->postprocess == POSTPROCESS_VIDEO_RGB){
 		for (size_t i = 0; i < S->decode_pos; i += 3){
-			cont->vidp[cvf->inbuf_pos++] = SHMIF_RGBA(
+			cont->vidp[cvf->out_pos++] = SHMIF_RGBA(
 				S->decode[i+0], S->decode[i+1], S->decode[i+2], 0xff);
 			cvf->row_left--;
 			if (cvf->row_left == 0){
-				cvf->inbuf_pos -= cvf->w;
-				cvf->inbuf_pos += cont->pitch;
+				cvf->out_pos -= cvf->w;
+				cvf->out_pos += cont->pitch;
 				cvf->row_left = cvf->w;
 			}
 		}
@@ -669,7 +836,7 @@ static void process_video(struct a12_state* S)
 		for (size_t i = 0; i < S->decode_pos; i += 2){
 			uint16_t px;
 			unpack_u16(&px, &S->decode[i]);
-			cont->vidp[cvf->inbuf_pos++] =
+			cont->vidp[cvf->out_pos++] =
 				SHMIF_RGBA(
 					rgb565_lut5[ (px & 0xf800) >> 11],
 					rgb565_lut6[ (px & 0x07e0) >>  5],
@@ -678,8 +845,8 @@ static void process_video(struct a12_state* S)
 				);
 			cvf->row_left--;
 			if (cvf->row_left == 0){
-				cvf->inbuf_pos -= cvf->w;
-				cvf->inbuf_pos += cont->pitch;
+				cvf->out_pos -= cvf->w;
+				cvf->out_pos += cont->pitch;
 				cvf->row_left = cvf->w;
 			}
 		}
@@ -867,7 +1034,7 @@ static void pack_rgba_region(struct a12_state* S,
 
 /* possible point to 'yield' unless we go with the 'reorder in queue' */
 		debug_print("frame %zu / %zu", i, blocks);
-		append_outb(S, STATE_VIDEO_PACKET, outb, hdr + bpb);
+		append_outb(S, STATE_VIDEO_PACKET, outb, hdr + bpb, NULL, 0);
 	}
 
 /* last chunk */
@@ -891,7 +1058,7 @@ static void pack_rgba_region(struct a12_state* S,
 				row_len = w;
 			}
 		}
-		append_outb(S, STATE_VIDEO_PACKET, outb, left+hdr);
+		append_outb(S, STATE_VIDEO_PACKET, outb, left+hdr, NULL, 0);
 	}
 
 #ifdef LOG_FRAME_OUTPUT
@@ -939,7 +1106,7 @@ static void pack_rgb_region(
 				row_len = w;
 			}
 		}
-		append_outb(S, STATE_VIDEO_PACKET, outb, hdr + bpb);
+		append_outb(S, STATE_VIDEO_PACKET, outb, hdr + bpb, NULL, 0);
 	}
 
 /* last chunk */
@@ -958,7 +1125,7 @@ static void pack_rgb_region(
 				row_len = w;
 			}
 		}
-		append_outb(S, STATE_VIDEO_PACKET, outb, left+hdr);
+		append_outb(S, STATE_VIDEO_PACKET, outb, left+hdr, NULL, 0);
 	}
 }
 static void pack_rgb565_region(
@@ -998,7 +1165,7 @@ static void pack_rgb565_region(
 				row_len = w;
 			}
 		}
-		append_outb(S, STATE_VIDEO_PACKET, outb, hdr + bpb);
+		append_outb(S, STATE_VIDEO_PACKET, outb, hdr + bpb, NULL, 0);
 	}
 
 /* last chunk */
@@ -1023,8 +1190,122 @@ static void pack_rgb565_region(
 				row_len = w;
 			}
 		}
-		append_outb(S, STATE_VIDEO_PACKET, outb, left+hdr);
+		append_outb(S, STATE_VIDEO_PACKET, outb, left+hdr, NULL, 0);
 	}
+}
+
+/*
+ * Need to chunk up a binary stream that do not have intermediate headers, that
+ * typically comes with the compression / h264 / ...  output. To avoid yet
+ * another copy, we use the prepend mechanism in append_outb.
+ */
+static void chunk_pack(struct a12_state* S,
+	int type, uint8_t* buf, size_t buf_sz, size_t chunk_sz)
+{
+	size_t n_chunks = buf_sz / chunk_sz;
+
+	uint8_t outb[header_sizes[type]];
+	outb[0] = 0; /* [0] : channel id */
+	pack_u32(0xbacabaca, &outb[1]); /* [1..4] : stream */
+	pack_u16(chunk_sz, &outb[5]); /* [5..6] : length */
+
+	for (size_t i = 0; i < n_chunks; i++){
+		append_outb(S, type, &buf[i * chunk_sz], chunk_sz, outb, sizeof(outb));
+	}
+
+	size_t left = buf_sz - n_chunks * chunk_sz;
+	pack_u16(left, &outb[5]); /* [5..6] : length */
+	if (left)
+		append_outb(S, type, &buf[n_chunks * chunk_sz], left, outb, sizeof(outb));
+}
+
+struct compress_res {
+	bool ok;
+	uint8_t type;
+	size_t out_sz;
+	uint8_t* out_buf;
+};
+
+static struct compress_res compress_deltaz(struct a12_state* S, uint8_t ch,
+	struct shmifsrv_vbuffer* vb, size_t x, size_t y, size_t w, size_t h)
+{
+	int type;
+	uint32_t* compress_in;
+	size_t compress_in_sz = 0;
+	struct shmifsrv_vbuffer* ab = &S->channels[ch].acc;
+
+/* reset the accumulation buffer so that we rebuild the normal frame */
+	if (ab->w != vb->w || ab->h != vb->h){
+		free(ab->buffer);
+		free(S->channels[ch].compression);
+		ab->buffer = NULL;
+	}
+
+/* first or reset run, build accumulation buffer and copy */
+	if (!ab->buffer){
+		type = POSTPROCESS_VIDEO_MINIZ;
+		*ab = *vb;
+		size_t nb = vb->w * vb->h * sizeof(shmif_pixel);
+		ab->buffer = malloc(nb);
+
+		if (!ab->buffer)
+			return (struct compress_res){};
+
+/* the compression buffer stores a ^ b, accumulation is a packed copy of the
+ * contents of the previous input frame, this should provide a better basis for
+ * deflates RLE etc. stages, but also act as an option for us to provide our
+ * cheaper RLE or send out a raw- frame when the RLE didn't work out */
+		S->channels[ch].compression = malloc(nb);
+		compress_in_sz = nb;
+
+		if (!S->channels[ch].compression){
+			free(ab->buffer);
+			ab->buffer = NULL;
+			return (struct compress_res){};
+		}
+
+/* so accumulation buffer might be tightly packed while the source
+ * buffer do not have to be, thus we need to iterate and do this copy */
+		compress_in = (uint32_t*) ab->buffer;
+		for (size_t y = 0; y < vb->h; y++){
+			for (size_t x = 0; x < vb->w; x++){
+				uint8_t r, g, b, a;
+				SHMIF_RGBA_DECOMP(vb->buffer[y*vb->pitch+x], &r, &g, &b, &a);
+				ab->buffer[y*vb->w+x] = SHMIF_RGBA(r, g, b, a);
+			}
+		}
+	}
+/* got accumulation buffer, update and perform compress at the same time,
+ * this is the place to also provide our own RLE instead if needed */
+	else {
+/* alignment is taken care of so the cast is safe */
+		compress_in = (uint32_t*) S->channels[ch].compression;
+		for (size_t cy = y; cy < y+h; cy++){
+			for (size_t cx = x; cx < x+w; cx++){
+				uint32_t px_ac = ab->buffer[cy * ab->w + cx];
+				uint32_t px_in = vb->buffer[cy * vb->pitch + cx];
+				compress_in[compress_in_sz++] = px_ac ^ px_in;
+				ab->buffer[cy * ab->w + cx] = px_in;
+			}
+		}
+		compress_in_sz *= sizeof(shmif_pixel);
+		type = POSTPROCESS_VIDEO_DMINIZ;
+	}
+
+/* We have a delta frame, use accumulation buffer as a way to calculate a ^ b
+ * and store ^ b. For smaller regions, we might want to do something simpler
+ * like RLE only. The flags (,0) can be derived with the _zip helper
+ */
+	size_t out_sz;
+	uint8_t* buf = tdefl_compress_mem_to_heap(
+			compress_in, compress_in_sz, &out_sz, 0);
+
+	return (struct compress_res){
+		.type = type,
+		.ok = buf != NULL,
+		.out_buf = buf,
+		.out_sz = out_sz
+	};
 }
 
 void
@@ -1048,7 +1329,8 @@ a12_channel_vframe(struct a12_state* S,
 
 /* sanity check against a dumb client here as well */
 	if (x + w > vb->w || y + h > vb->h){
-		debug_print("client provided bad/broken subregion");
+		debug_print("client provided bad/broken subregion (%zu+%zu > %zu)"
+			"(%zu+%zu > %zu)", x, w, vb->w, y, h, vb->h);
 		x = 0;
 		y = 0;
 		w = vb->w;
@@ -1078,7 +1360,7 @@ a12_channel_vframe(struct a12_state* S,
 	uint8_t buf[CONTROL_PACKET_SIZE] = {0};
 	pack_u64(S->last_seen_seqnr, &buf[0]);
 /* uint8_t entropy[8]; */
-/* [16] : channel */
+	buf[16] = chid; /* [16] : channel-id */
 	buf[17] = COMMAND_VIDEOFRAME; /* [17] : command */
 	pack_u32(0, &buf[18]); /* [18..21] : stream-id */
 /* [22] : format - unused */
@@ -1093,28 +1375,46 @@ a12_channel_vframe(struct a12_state* S,
  * when 'chain of deltas' mode for shmif is added */
 	buf[44] = 1;
 
-	debug_print("out vframe: %zu*%zu @0,0+%zu,%zu", vb->w, vb->h, vb->w, vb->h);
+	debug_print("out vframe: %zu*%zu @%zu,%zu+%zu,%zu", vb->w, vb->h, w, h, x, y);
 
-/* RGB888x */
-	if (opts.rgb565) {
+	if (opts.method == VFRAME_METHOD_RAW_RGB565){
 		pack_u32(w * h * 2, &buf[36]); /* [36..39] : wrong if */
 		pack_u32(w * h * 2, &buf[40]); /* [36..39] : expanded sz */
 		buf[22] = POSTPROCESS_VIDEO_RGB565;
-		append_outb(S, STATE_CONTROL_PACKET, buf, CONTROL_PACKET_SIZE);
+		append_outb(S, STATE_CONTROL_PACKET, buf, CONTROL_PACKET_SIZE, NULL, 0);
 		pack_rgb565_region(S, x, y, w, h, vb, chunk_sz);
 	}
-	else if (vb->flags.ignore_alpha || opts.skip_alpha){
+	else if (vb->flags.ignore_alpha || opts.method == VFRAME_METHOD_RAW_NOALPHA){
 		pack_u32(w * h * 3, &buf[36]); /* [36..39] : wrong if */
 		pack_u32(w * h * 3, &buf[40]); /* [36..39] : expanded sz */
 		buf[22] = POSTPROCESS_VIDEO_RGB;
-		append_outb(S, STATE_CONTROL_PACKET, buf, CONTROL_PACKET_SIZE);
+		append_outb(S, STATE_CONTROL_PACKET, buf, CONTROL_PACKET_SIZE, NULL, 0);
 		pack_rgb_region(S, x, y, w, h, vb, chunk_sz);
 	}
-	else {
+	else if (opts.method == VFRAME_METHOD_NORMAL){
 		pack_u32(w * h * 4, &buf[36]); /* [36..39] : wrong if */
 		pack_u32(w * h * 4, &buf[40]); /* [36..39] : expanded sz */
-		append_outb(S, STATE_CONTROL_PACKET, buf, CONTROL_PACKET_SIZE);
+		append_outb(S, STATE_CONTROL_PACKET, buf, CONTROL_PACKET_SIZE, NULL, 0);
 		pack_rgba_region(S, x, y, w, h, vb, chunk_sz);
+	}
+/* delta- png - its changed region ^ last buffer, higher compresison
+ * cost locally as the state needs to be retained since it is a bit
+ * hairy to retain an accumulation buffer in shmif without problems */
+	else if (opts.method == VFRAME_METHOD_DPNG){
+		struct compress_res cres = compress_deltaz(S, chid, vb, x, y, w, h);
+
+		if (!cres.ok)
+			return;
+
+		buf[22] = cres.type;
+		pack_u32(cres.out_sz, &buf[36]);
+		pack_u32(w * h * 4, &buf[40]);
+
+		append_outb(S, STATE_CONTROL_PACKET, buf, CONTROL_PACKET_SIZE, NULL, 0);
+		chunk_pack(S, STATE_VIDEO_PACKET, cres.out_buf, cres.out_sz, chunk_sz);
+		debug_print("compressed results: %f %%",
+			(1.0 - (float) cres.out_sz / (float)(w * h * 4)) * 100.0f);
+		free(cres.out_buf);
 	}
 }
 
@@ -1152,6 +1452,6 @@ a12_channel_enqueue(struct a12_state* S, struct arcan_event* ev)
 		outb[i] = 'e';
  */
 
-	append_outb(S, STATE_EVENT_PACKET, outb, step + SEQUENCE_NUMBER_SIZE);
+	append_outb(S, STATE_EVENT_PACKET, outb, step + SEQUENCE_NUMBER_SIZE, NULL, 0);
 	debug_print("enqueue event %s", arcan_shmif_eventstr(ev, NULL, 0));
 }

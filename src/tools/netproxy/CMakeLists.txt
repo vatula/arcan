@@ -62,6 +62,7 @@ set(SOURCES
 	blake2bp-ref.c
 	blake2b-ref.c
 	a12.c
+	miniz/miniz.c
 )
 
 add_executable( arcan-netpipe ${SOURCES} netpipe.c)

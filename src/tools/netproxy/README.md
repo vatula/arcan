@@ -62,8 +62,12 @@ Milestone 1 - basic features (0.5.x)
 - [x] Control
 - [x] Netpipe working
 - [x] Uncompressed Video / Video delta
+  -  [ ] Accelerated video sources
+	-  [ ] Output segments
 - [ ] Uncompressed Audio / Audio delta
-- [ ] Compressed Video
+- [x] Compressed Video
+	-  [ ] NVencdec / VDPAU encdec
+	-  [x] xor-PNG
 - [ ] Raw binary descriptor transfers
 - [ ] Subsegments
 

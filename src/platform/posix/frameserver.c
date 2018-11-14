@@ -214,7 +214,7 @@ bool platform_fsrv_destroy(arcan_frameserver* src)
  * or at least not by SIGSEGV yourself. The 'no_dms_free' flag is used for
  * that purpose.
  */
-if (shmpage){
+	if (shmpage){
 		if (!src->flags.no_dms_free){
 			platform_fsrv_pushevent(src, &(struct arcan_event){
 				.category = EVENT_TARGET,
