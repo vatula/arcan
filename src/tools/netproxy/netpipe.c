@@ -8,9 +8,11 @@
 #include <unistd.h>
 #include <poll.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include "a12.h"
 
-static const short c_pollev = POLLIN | POLLERR | POLLNVAL | POLLHUP;
+static const short c_inev = POLLIN | POLLERR | POLLNVAL | POLLHUP;
+static const short c_outev = POLLOUT | POLLERR | POLLNVAL | POLLHUP;
 
 static inline void trace(const char* msg, ...)
 {
@@ -43,13 +45,12 @@ static void server_mode(
 {
 /* 1. setup a12 in connect mode, _open */
 	struct pollfd fds[3] = {
-		{ .fd = shmifsrv_client_handle(a), .events = c_pollev },
-		{	.fd = fdin, .events = c_pollev },
-		{ .fd = fdout, .events = fdout }
+		{ .fd = shmifsrv_client_handle(a), .events = c_inev },
+		{	.fd = fdin, .events = c_inev },
+		{ .fd = fdout, .events = c_outev }
 	};
 
-#ifdef DUMP_OUT
-	FILE* fpek_out = fopen("netpipe.srv.out", "w+");
+#ifdef DUMP_IN
 	FILE* fpek_in = fopen("netpipe.srv.in", "w+");
 #endif
 
@@ -63,13 +64,25 @@ static void server_mode(
 		int np = 2;
 		if (outbuf_sz || (outbuf_sz = a12_channel_flush(ast, &outbuf))){
 			ssize_t nw = write(fdout, outbuf, outbuf_sz);
+
+/* simple debugging mode, align the successful outwrites with a file */
 #ifdef DUMP_OUT
-			fwrite(outbuf, 1, outbuf_sz, fpek_out);
-			fprintf(fpek_out, "\n--end of block\n");
-			fflush(fpek_out);
+			if (nw > 0){
+				static uint8_t seqn;
+				char fn[sizeof("out_srv_xxx.raw")];
+				sprintf(fn, "out_srv_%"PRIu8".raw", seqn++);
+				FILE* outf = fopen(fn, "w+");
+				fwrite(outbuf, 1, nw, outf);
+				fclose(outf);
+			}
 #endif
-			if (nw > 0)
+
+/* couldn't write everything, non-blocking problem -- extend the poll
+ * to include pipe-out */
+			if (nw > 0){
+				outbuf += nw;
 				outbuf_sz -= nw;
+			}
 			if (outbuf_sz)
 				np = 3;
 		}
@@ -84,26 +97,36 @@ static void server_mode(
 			continue;
 		}
 
+		if (sv && fds[0].revents){
+			if (!(fds[0].revents & POLLIN)){
+				alive = false;
+				continue;
+			}
+		}
+
+		if (np == 3 && sv && fds[2].revents){
+			if (!(fds[2].revents & POLLOUT)){
+				alive = false;
+				continue;
+			}
+		}
+
 /* STDIN - update a12 state machine */
 		if (sv && fds[1].revents){
+			if (!(fds[1].revents & POLLIN)){
+				alive = false;
+				continue;
+			}
+
 			uint8_t inbuf[9000];
 			ssize_t nr = 0;
 			while ((nr = read(fds[1].fd, inbuf, 9000)) > 0){
 				trace("(srv) unpack %zd bytes", nr);
-#ifdef DUMP_OUT
+#ifdef DUMP_IN
 				fwrite(inbuf, 1, nr, fpek_in);
-				fprintf(fpek_in, "\n--end of block\n");
 				fflush(fpek_in);
 #endif
 				a12_channel_unpack(ast, inbuf, nr, a, on_srv_event);
-			}
-		}
-
-/* SHMIF-client - poll event queue, check/dispatch buffers */
-		if (sv && fds[0].revents){
-			if (fds[0].revents != POLLIN){
-				alive = false;
-				continue;
 			}
 		}
 
@@ -117,40 +140,37 @@ static void server_mode(
 				a12_channel_enqueue(ast, &newev);
 		}
 
-		switch(shmifsrv_poll(a)){
-			case CLIENT_DEAD:
-				trace("(srv) client died");
+		int pv;
+		while ((pv = shmifsrv_poll(a)) != CLIENT_NOT_READY){
+			if (pv == CLIENT_DEAD){
 /* the descriptor will be gone so next poll will fail */
-			break;
-			case CLIENT_NOT_READY:
-/* do nothing */
-			break;
-			case CLIENT_VBUFFER_READY:{
-				trace("(srv) video-buffer");
-/* copy + release if possible,
+				break;
+			}
+			if (pv & CLIENT_VBUFFER_READY){
+	/* copy + release if possible,
 	 arcan_event ev = {
 	     .category = EVENT_TARGET,
 			 .tgt.kind = TARGET_COMMAND_BUFFER_FAIL
 	 };
-
  */
 				struct shmifsrv_vbuffer vb = shmifsrv_video(a);
-				a12_channel_vframe(ast, &vb);
+
+/*
+ * Here we should add a backpressure / throughput / ... based method for
+ * determining if we release the frame back in the wild or not, use extra
+ * time to compress and so on
+ */
+				a12_channel_vframe(ast, 0, &vb, (struct a12_vframe_opts){});
 				shmifsrv_video_step(a);
 			}
-			break;
-			case CLIENT_ABUFFER_READY:
+			if (pv & CLIENT_ABUFFER_READY){
 				trace("(srv) audio-buffer");
-/* copy + release if possible */
-				shmifsrv_audio(a, NULL, 0);
-			break;
-/* do nothing */
-			break;
+				shmifsrv_audio(a, NULL, NULL);
 			}
 		}
+	}
 
-#ifdef DUMP_OUT
-	fclose(fpek_out);
+#ifdef DUMP_IN
 	fclose(fpek_in);
 #endif
 	trace("(srv) shutting down connection");
@@ -237,8 +257,7 @@ static int run_shmif_client(
 	struct arcan_shmif_cont wnd =
 		arcan_shmif_open(SEGID_UNKNOWN, SHMIF_NOACTIVATE, NULL);
 
-#ifdef DUMP_OUT
-	FILE* fpek_out = fopen("netpipe.cl.out", "w+");
+#ifdef DUMP_IN
 	FILE* fpek_in = fopen("netpipe.cl.in", "w+");
 #endif
 
@@ -260,8 +279,9 @@ static int run_shmif_client(
 	fcntl(fdin, F_SETFL, flags | O_NONBLOCK);
 
 	struct pollfd fds[] = {
-		{ .fd = wnd.epipe, .events = c_pollev },
-		{	.fd = fdin, .events = c_pollev }
+		{ .fd = wnd.epipe, .events = c_inev },
+		{	.fd = fdin, .events = c_inev },
+		{ .fd = fdout, .events = c_outev },
 	};
 
 	uint8_t* outbuf;
@@ -275,14 +295,22 @@ static int run_shmif_client(
 		if (outbuf_sz || (outbuf_sz = a12_channel_flush(ast, &outbuf))){
 			ssize_t nw = write(fdout, outbuf, outbuf_sz);
 #ifdef DUMP_OUT
-			fwrite(outbuf, 1, outbuf_sz, fpek_out);
-			fflush(fpek_out);
+			if (nw > 0){
+				static uint8_t seqn;
+				char fn[sizeof("out_cl_xxx.raw")];
+				sprintf(fn, "out_cl_%"PRIu8".raw", seqn++);
+				FILE* outf = fopen(fn, "w+");
+				fwrite(outbuf, 1, nw, outf);
+				fclose(outf);
+			}
 #endif
-			if (nw > 0)
+			if (nw > 0){
+				outbuf += nw;
 				outbuf_sz -= nw;
+			}
+/* short-write? expand pollset and try again later */
 			if (outbuf_sz)
 				np = 3;
-			continue;
 		}
 
 /* events from parent, nothing special - unless the carry a descriptor */
@@ -294,7 +322,19 @@ static int run_shmif_client(
 			continue;
 		}
 
+		if (np == 3 && sv && fds[2].revents){
+			if (!(fds[2].revents & POLLOUT)){
+				alive = false;
+				continue;
+			}
+		}
+
 		if (sv && fds[0].revents){
+			if (!(fds[0].revents & POLLIN)){
+				alive = false;
+				continue;
+			}
+
 			struct arcan_event newev;
 			int sc;
 			while (( sc = arcan_shmif_poll(&wnd, &newev)) > 0){
@@ -309,17 +349,22 @@ static int run_shmif_client(
 /* FIXME: send disconnect packet */
 			if (-1 == sc){
 				alive = false;
+				continue;
 			}
 		}
 
 /* flush data-in and feed to state machine */
 		if (sv && fds[1].revents){
+			if (!(fds[1].revents & POLLIN)){
+				alive = false;
+				continue;
+			}
+
 			uint8_t buf[9000];
 			ssize_t nr;
 			if ((nr = read(fds[1].fd, buf, 9000)) > 0){
-#ifdef DUMP_OUT
+#ifdef DUMP_IN
 				fwrite(buf, 1, nr, fpek_in);
-				fprintf(fpek_in, "\n--end of block\n");
 				fflush(fpek_in);
 #endif
 				a12_channel_unpack(ast, buf, nr, &cs, on_cl_event);
@@ -327,9 +372,8 @@ static int run_shmif_client(
 		}
 	}
 
-#ifdef DUMP_OUT
+#ifdef DUMP_IN
 	fclose(fpek_in);
-	fclose(fpek_out);
 #endif
 	return EXIT_SUCCESS;
 }

@@ -213,11 +213,6 @@ enum vbuffer_status {
 	VBUFFER_HANDLE
 };
 
-enum abuffer_status {
-	ABUFFER_NODATA = 0,
-	ABUFFER_OKDATA
-};
-
 struct shmifsrv_vbuffer {
 	int state;
 	shmif_pixel* buffer;
@@ -240,16 +235,6 @@ struct shmifsrv_vbuffer {
 /* only used with hwhandles : true */
 	size_t formats[4];
 	int planes[4];
-};
-
-struct shmifsrv_abuffer {
-	int state;
-	shmif_asample* buffer;
-	size_t bytes;
-	size_t limit;
-	size_t samples;
-	size_t samplerate;
-	uint8_t channels;
 };
 
 /*
@@ -278,27 +263,13 @@ struct shmifsrv_vbuffer shmifsrv_video(struct shmifsrv_client*);
 void shmifsrv_video_step(struct shmifsrv_client*);
 
 /* [CRITICAL]
- * Copy out the currently active audio buffer slot in the client. This works
- * differently from the video transfer in that there is always an implied step
- * and the current buffer will be written out to shmifsrv abuffer.
- *
- * The [state] field of the returned structure will match abuffer_status:
- * ABUFFER_NODATA - nothing available.
- * ABUFFER_OKDATA - buffer is updated.
- *
- * If [dst] is provided, and [dst_sz] is of sufficient size (can be changed
- * during resize request), the destination copy buffer will be [dst] instead
- * of a [shmifsrv-_client] stored one. The [buffer] field in the returned
- * structure will match if provided.
+ * Flush all pending buffers to the provided drain function. In contrast to
+ * _video_step this function has an implicit step stage so all known buffers
+ * will be flushed and a waiting client will be woken up.
  */
-struct shmifsrv_abuffer shmifsrv_audio(
-	struct shmifsrv_client*, shmif_asample* dst, size_t dst_sz);
-
-/* [CRITICAL]
- * Forward that the last known video buffer is no longer interesting and
- * signal a release to the client
- */
-void shmifsrv_audio_step(struct shmifsrv_client*);
+void shmifsrv_audio(struct shmifsrv_client* cl,
+	void (*on_buffer)(shmif_asample* buf,
+		size_t n_samples, unsigned channels, unsigned rate, void* tag), void* tag);
 
 /*
  * [THREAD_UNSAFE]

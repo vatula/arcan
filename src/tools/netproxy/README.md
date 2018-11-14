@@ -181,7 +181,6 @@ bstream, vstream and astreams.
 
 ### command = 5, channel negotiation
 - sequence number : uint64
-- channel-id : uint8
 - segkind : uint8
 
 This maps to subsegment requests and bootstraps the keys, rendezvous, etc.
@@ -189,20 +188,21 @@ needed to initiate a new channel as part of a subsegment setup.
 
 ### command - 6, command failure
 - sequence number : uint64
-- channel-id : uint8
 - segkind : uint8
 
 ### command - 7, define vstream
-- [19..22] : stream-id: uint32
-- [23    ] : format: uint8
-- [24..25] : surfacew: uint16
-- [26..27] : surfaceh: uint16
-- [28..29] : startx: uint16 (0..outw-1)
-- [30..31] : starty: uint16 (0..outh-1)
-- [32..33] : framew: uint16 (outw-startx + framew < outw)
-- [34..35] : frameh: uint16 (outh-starty + frameh < outh)
-- [36    ] : dataflags: uint8
-- [37..40] : length: uint32
+- [18..21] : stream-id: uint32
+- [22    ] : format: uint8
+- [23..24] : surfacew: uint16
+- [25..26] : surfaceh: uint16
+- [27..28] : startx: uint16 (0..outw-1)
+- [29..30] : starty: uint16 (0..outh-1)
+- [31..32] : framew: uint16 (outw-startx + framew < outw)
+- [33..34] : frameh: uint16 (outh-starty + frameh < outh)
+- [35    ] : dataflags: uint8
+- [36..39] : length: uint32
+- [40..43] : expanded length: uint32
+- [44]     : commit: uint8
 
 This defines a new video stream frame. The length- field covers how many bytes
 that need to be buffered for the data to be decoded. This can be chunked up
@@ -229,26 +229,12 @@ which have their own pack/unpack/versioning routines. When the SHMIF event
 model itself is finalized, it will be added to the documentation here.
 
 ## Vstream-data (3), Astream-data (4), Bstream-data (5) (variable length)
-- sequence number : uint64
 - channel-id : uint8
 - stream-id : uint32
-
-# Notes
-
-The more complicated part will be resize, it's not a terrific idea to make
-that part of the control channel as such, better to make that an effect of
-vframe-begin, aframe-begin - though the one that needs more thinking is
-some of the subprotocols (gamma ramps, ...) though that is quite far down
-the list.
-
-some subsegments should not be treated as such, notably clipboard - as the
-lack of synchronisity between the channels will become a problem, i.e. msg
-is added to clipboard for paste, user keeps on typing, paste arrives after
-the intended insertion point. There are very few other such points in the
-IPC system though.
+- length : uint32
 
 # Licenses
 
-arcan-net is (c) Bjorn Stahl 2017 and licensed under the 3-clause BSD
+arcan-net is (c) Bjorn Stahl 2017-2018 and licensed under the 3-clause BSD
 license. It is dependent on BLAKE2- (CC or Apache-2.0, see COPYING.BLAKE2)
 and on UDT (Apache-2.0 / 3-clause BSD).

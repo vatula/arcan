@@ -65,12 +65,12 @@ set(SOURCES
 )
 
 add_executable( arcan-netpipe ${SOURCES} netpipe.c)
-add_executable( arcan-net ${SOURCES} netproxy.cpp)
+#add_executable( arcan-net ${SOURCES} netproxy.cpp)
 #add_dependencies( arcan-net udt )
 add_sanitizers( arcan-netpipe )
-add_sanitizers( arcan-net )
+#add_sanitizers( arcan-net )
 
-set_property(TARGET arcan-net PROPERTY CXX_STANDARD 11)
+#set_property(TARGET arcan-net PROPERTY CXX_STANDARD 11)
 set_property(TARGET arcan-netpipe PROPERTY C_STANDARD 11)
 
 # target_link_libraries(arcan-net ${LIBRARIES}

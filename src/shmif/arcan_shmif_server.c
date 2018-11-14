@@ -176,6 +176,7 @@ size_t shmifsrv_dequeue_events(
 		asm volatile("": : :"memory");
 		__sync_synchronize();
 		cl->con->shm.ptr->parentevq.front = front;
+		arcan_sem_post(cl->con->esync);
 		shmifsrv_leave();
 		return count;
 	}
@@ -273,10 +274,11 @@ int shmifsrv_poll(struct shmifsrv_client* cl)
 				}
 				return CLIENT_NOT_READY;
 			}
-			int a = atomic_load(&cl->con->shm.ptr->aready);
-			int v = atomic_load(&cl->con->shm.ptr->vready);
+			int a = !!(atomic_load(&cl->con->shm.ptr->aready));
+			int v = !!(atomic_load(&cl->con->shm.ptr->vready));
 			shmifsrv_leave();
-			return (a * 1) | (v * 1);
+			return
+				(CLIENT_VBUFFER_READY * v) | (CLIENT_ABUFFER_READY * a);
 		}
 		else
 			cl->status = BROKEN;
@@ -321,6 +323,11 @@ void shmifsrv_set_protomask(struct shmifsrv_client* cl, unsigned mask)
 		return;
 
 	cl->con->metamask = mask;
+}
+
+void shmifsrv_audio_step(struct shmifsrv_client* cl)
+{
+
 }
 
 void shmifsrv_video_step(struct shmifsrv_client* cl)
@@ -408,17 +415,36 @@ bool shmifsrv_process_event(struct shmifsrv_client* cl, struct arcan_event* ev)
 	return false;
 }
 
-struct shmifsrv_abuffer shmifsrv_audio(
-	struct shmifsrv_client* cl, shmif_asample* buf, size_t buf_sz)
+void shmifsrv_audio(struct shmifsrv_client* cl,
+	void (*on_buffer)(shmif_asample* buf,
+		size_t n_samples, unsigned channels, unsigned rate, void* tag), void* tag)
 {
-	struct shmifsrv_abuffer res = {0};
 	volatile int ind = atomic_load(&cl->con->shm.ptr->aready) - 1;
 	volatile int amask = atomic_load(&cl->con->shm.ptr->apending);
-/* missing, copy buffer, re-use buf if possible, release if we're out
- * of buffers */
+
+/* sanity check, untrusted source
+	if (ind >= src->abuf_cnt || ind < 0){
+		platform_fsrv_leave(src);
+		return ARCAN_ERRC_NOTREADY;
+	}
+
+	int i = ind, prev;
+	do {
+		prev = i;
+		i--;
+		if (i < 0)
+			i = src->abuf_cnt-1;
+	} while (i != ind && ((1<<i)&amask) > 0);
+
+  sweep from oldest buffer (prev) up to i, yield to on_buffer, mask as consumed
+
+	atomic_store(&src->shm.ptr->abufused[prev], 0);
+	int last = atomic_fetch_and_explicit(&src->shm.ptr->apending,
+		~(1 << prev), memory_order_release);
+*/
+
 	atomic_store_explicit(&cl->con->shm.ptr->aready, 0, memory_order_release);
 	arcan_sem_post(cl->con->async);
-	return res;
 }
 
 bool shmifsrv_tick(struct shmifsrv_client* cl)
