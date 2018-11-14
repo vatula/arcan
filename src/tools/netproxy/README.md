@@ -8,17 +8,17 @@ or anytime soon. Treat it like a sample of what is to come during the 0.6-
 series of releases - the real version will depend on the rendering protocol
 that will be derived from a packing format of the lua API, the serialization
 format used in TUI and A/V encoding formats to be decided (likely
-h264-lowlatency for game content, HEVC for bufferable media, zstd for
-uncompressed blob transfers, Open3DGC for 3dvobj data etc).
+h264-lowlatency for game content, AV1 for bufferable media if hw gets fast
+enough, zstd for uncompressed blob transfers, Open3DGC for 3dvobj data etc).
 
 There are two modes to building this tool, a 'simple' (arcan-netpipe) and
-the "real" but defunct (arcan-net).
+the "real" but defunct (arcan-net) and disabled.
 
 Arcan-netpipe uses some unspecified channel for transmission, e.g. piping via
 SSH and so on. As such, is has rather low performance and the communication is
-entirely unprotected. It is valuable for testing, development and
-debugging/fault-injection - and for quick and dirty low- bandwidth bridging. It
-can also only bridge a single client per instance.
+otherwise unprotected. It is valuable for testing, development and
+debugging/fault-injection - and for quick and dirty bridging. It can also only
+bridge a single client per instance.
 
 Arcan-net is just stubs/defunct experiments at the moment, the intention is to
 build on UDT as a low-latency UDP based transport but will not be given any
@@ -27,10 +27,27 @@ need to be really robust before going further.
 
 # Use
 
-Arcan netpipe version (testing example, act as a MiM proxy):
+Arcan netpipe version (testing example, act as a local MiM proxy):
 
-    ./arcan-netpipe -t &
-     ARCAN_CONNPATH=test afsrv_terminal
+    ./arcan-netpipe -t -s mycon &
+		ARCAN_CONNPATH=mycon afsrv_terminal
+
+Forwarding a local client:
+
+    ./arcan-netpipe -s mycon -x ssh user@host arcan-netpipe -c -s localcon
+
+Note that a connection point need to be specified on both sides.
+
+Forwarding a remote client:
+
+    ./arcan-netpipe -c -x ssh user@host arcan-netpipe -s mycon -x afsrv_terminal
+
+Or you can manually setup fifos, client/server etc.:
+
+    mkfifo c cl_in
+		mkfifo c cl_out
+		cat cl_in | arcan-netpipe -c | cl_out
+		cat cl_out |arcan-netpipe -s mycon | cl_in
 
 # Todo
 
@@ -54,7 +71,7 @@ Milestone 2 - closer to useful (0.6.x)
 
 - [ ] Better / source specific compression
 - [ ] TUI- text channel
-- [ ] Data multiplexing
+- [ ] A / V / E interleaving
 - [ ] Progressive encoding
 - [ ] Accelerated encoding of gpu-handles
 - [ ] Traffic monitoring tools
@@ -71,6 +88,7 @@ Milestone 3 - big stretch (0.6.x)
 - [ ] Side-channel Resilience
 - [ ] Local discovery Mechanism
 - [ ] Merge into arcan-net
+- [ ] Special provisions for agp/alt channels
 
 # Security/Safety
 
@@ -206,8 +224,8 @@ needed to initiate a new channel as part of a subsegment setup.
 
 This defines a new video stream frame. The length- field covers how many bytes
 that need to be buffered for the data to be decoded. This can be chunked up
-into 1..length packages, depending on interleaving and so on. The vstream
-counter increases incrementally and is shared between the v/a/b streams.
+into 1..n packages, depending on interleaving and so on. The vstream counter
+increases incrementally and is shared between the v/a/b streams.
 
 Outw/Outh can change frequently (corresponds to window resize).
 

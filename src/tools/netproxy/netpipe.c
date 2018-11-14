@@ -136,8 +136,9 @@ static void server_mode(
 			if (arcan_shmif_descrevent(&newev)){
 				trace("(srv) ignoring descriptor passing event");
 			}
-			else
+			else if (!shmifsrv_process_event(a, &newev)){
 				a12_channel_enqueue(ast, &newev);
+			}
 		}
 
 		int pv;
@@ -154,6 +155,7 @@ static void server_mode(
 	 };
  */
 				struct shmifsrv_vbuffer vb = shmifsrv_video(a);
+
 
 /*
  * Here we should add a backpressure / throughput / ... based method for
@@ -421,7 +423,8 @@ int main(int argc, char** argv)
 	const char* cp = NULL;
 	int mode = 0;
 
-	for (size_t i = 1; i < argc; i++){
+	size_t i = 1;
+	for (; i < argc; i++){
 		if (strcmp(argv[i], "-k") == 0){
 			i++;
 			if (i == argc)
@@ -470,6 +473,9 @@ int main(int argc, char** argv)
 	if (mode == 0)
 		return show_usage(argv[0], "missing connection mode (-c or -s)");
 
+/*
+ * continue to sweep for a -x argument, if found, setup pipes, fork, exec.
+ */
 	if (mode == 1)
 		return run_shmif_server(authk, authk_sz, cp, STDIN_FILENO, STDOUT_FILENO);
 

@@ -358,6 +358,7 @@ struct shmifsrv_vbuffer shmifsrv_video(struct shmifsrv_client* cl)
 	if (!cl || cl->status != READY)
 		return res;
 
+	cl->con->desc.hints = cl->con->desc.pending_hints;
 	res.flags.origo_ll = cl->con->desc.hints & SHMIF_RHINT_ORIGO_LL;
 	res.flags.ignore_alpha = cl->con->desc.hints & SHMIF_RHINT_IGNORE_ALPHA;
 	res.flags.subregion = cl->con->desc.hints & SHMIF_RHINT_SUBREGION;
@@ -396,9 +397,15 @@ bool shmifsrv_process_event(struct shmifsrv_client* cl, struct arcan_event* ev)
 
 	if (ev->category == EVENT_EXTERNAL){
 		switch (ev->ext.kind){
+
+/* default behavior for bufferstream is to simply send the reject, we can look
+ * into other options later but for now the main client is the network setup
+ * and accelerated buffer management is far on the list there */
 		case EVENT_EXTERNAL_BUFFERSTREAM:
-/* FIXME: used for handle passing, accumulate, grab descriptor,
- * use ext.bstream.* */
+			shmifsrv_enqueue_event(cl, &(struct arcan_event){
+				.category = EVENT_TARGET,
+				.tgt.kind = TARGET_COMMAND_BUFFER_FAIL
+			}, -1);
 			return true;
 		break;
 		case EVENT_EXTERNAL_CLOCKREQ:
