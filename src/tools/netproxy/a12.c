@@ -1397,7 +1397,7 @@ a12_channel_vframe(struct a12_state* S,
 		append_outb(S, STATE_CONTROL_PACKET, buf, CONTROL_PACKET_SIZE, NULL, 0);
 		pack_rgba_region(S, x, y, w, h, vb, chunk_sz);
 	}
-/* delta- png - its changed region ^ last buffer, higher compresison
+/* delta- png - its changed region ^ last buffer, higher compression
  * cost locally as the state needs to be retained since it is a bit
  * hairy to retain an accumulation buffer in shmif without problems */
 	else if (opts.method == VFRAME_METHOD_DPNG){
