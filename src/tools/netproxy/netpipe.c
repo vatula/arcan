@@ -3,7 +3,6 @@
  * relying on pre-established secure channels and low bandwidth demands.
  */
 #include <arcan_shmif.h>
-#include <arcan_shmif_server.h>
 #include <errno.h>
 #include <unistd.h>
 #include <signal.h>
@@ -11,27 +10,18 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <sys/wait.h>
+#include "a12_int.h"
 #include "a12.h"
 
 static const short c_inev = POLLIN | POLLERR | POLLNVAL | POLLHUP;
 static const short c_outev = POLLOUT | POLLERR | POLLNVAL | POLLHUP;
-
-static inline void trace(const char* msg, ...)
-{
-#ifdef _DEBUG
-	va_list args;
-	va_start( args, msg );
-		vfprintf(stderr,  msg, args );
-		fprintf(stderr, "\n");
-	va_end( args);
-	fflush(stderr);
-#endif
-}
+static int vframe_method = 0;
 
 static void on_srv_event(int chid, struct arcan_event* ev, void* tag)
 {
 	struct shmifsrv_client* cs = tag;
-	trace("client event: %s on ch %d", arcan_shmif_eventstr(ev, NULL, 0), chid);
+	debug_print(2,
+		"client event: %s on ch %d", arcan_shmif_eventstr(ev, NULL, 0), chid);
 	if (chid != 0){
 		fprintf(stderr, "Multi-channel support not yet finished\n");
 		return;
@@ -123,7 +113,7 @@ static void server_mode(
 			uint8_t inbuf[9000];
 			ssize_t nr = 0;
 			while ((nr = read(fds[1].fd, inbuf, 9000)) > 0){
-				trace("(srv) unpack %zd bytes", nr);
+				debug_print(2, "unpack %zd bytes", nr);
 #ifdef DUMP_IN
 				fwrite(inbuf, 1, nr, fpek_in);
 				fflush(fpek_in);
@@ -134,9 +124,10 @@ static void server_mode(
 
 		struct arcan_event newev;
 		while (shmifsrv_dequeue_events(a, &newev, 1)){
-			trace("(srv) forward event: %s", arcan_shmif_eventstr(&newev, NULL, 0));
+			debug_print(2, "forward event: %s",
+				arcan_shmif_eventstr(&newev, NULL, 0));
 			if (arcan_shmif_descrevent(&newev)){
-				trace("(srv) ignoring descriptor passing event");
+				debug_print(1, "(srv) ignoring descriptor passing event");
 			}
 			else if (!shmifsrv_process_event(a, &newev)){
 				a12_channel_enqueue(ast, &newev);
@@ -159,17 +150,16 @@ static void server_mode(
 				struct shmifsrv_vbuffer vb = shmifsrv_video(a);
 
 /*
- * Here we should add a backpressure / throughput / ... based method for
- * determining if we release the frame back in the wild or not, use extra
- * time to compress and so on
+ * Heuristics on type, vframe method etc. with argument overrides should be
+ * added here
  */
 				a12_channel_vframe(ast, 0, &vb, (struct a12_vframe_opts){
-					.method = VFRAME_METHOD_RAW_RGB565
+					.method = vframe_method
 				});
 				shmifsrv_video_step(a);
 			}
 			if (pv & CLIENT_ABUFFER_READY){
-				trace("(srv) audio-buffer");
+				debug_print(2, "audio-buffer");
 				shmifsrv_audio(a, NULL, NULL);
 			}
 		}
@@ -178,7 +168,7 @@ static void server_mode(
 #ifdef DUMP_IN
 	fclose(fpek_in);
 #endif
-	trace("(srv) shutting down connection");
+	debug_print(1, "(srv) shutting down connection");
 	shmifsrv_free(a);
 }
 
@@ -212,9 +202,9 @@ static int run_shmif_server(
 		}
 
 		struct pollfd pfd = { .fd = fd, .events = POLLIN | POLLERR | POLLHUP };
-		trace("(srv) configured, polling");
+		debug_print(1, "(srv) configured, polling");
 		if (poll(&pfd, 1, -1) == 1){
-			trace("(srv) got connection");
+			debug_print(1, "(srv) got connection");
 
 /* go through the accept step, now we can hand the connection over
  * and repeat the listening stage in some other execution context,
@@ -227,7 +217,7 @@ static int run_shmif_server(
 			}
 
 			if (pfd.revents & (~POLLIN)){
-				trace("(srv) poll failed, rebuilding");
+				debug_print(1, "(srv) poll failed, rebuilding");
 				shmifsrv_free(cl);
 			}
 		}
@@ -248,7 +238,8 @@ struct client_state {
 static void on_cl_event(int chid, struct arcan_event* ev, void* tag)
 {
 	struct client_state* cs = tag;
-	trace("client event: %s on ch %d", arcan_shmif_eventstr(ev, NULL, 0), chid);
+	debug_print(2, "client event: %s on ch %d",
+		arcan_shmif_eventstr(ev, NULL, 0), chid);
 	if (chid != 0){
 		fprintf(stderr, "Multi-channel support not yet finished\n");
 		return;
@@ -292,7 +283,7 @@ static int run_shmif_client(
 
 	uint8_t* outbuf;
 	size_t outbuf_sz = 0;
-	trace("(cl) got proxy connection, waiting for source");
+	debug_print(1, "(cl) got proxy connection, waiting for source");
 
 	bool alive = true;
 	while (alive){
@@ -344,10 +335,11 @@ static int run_shmif_client(
 			struct arcan_event newev;
 			int sc;
 			while (( sc = arcan_shmif_poll(&wnd, &newev)) > 0){
-				trace("(cl) incoming event: %s", arcan_shmif_eventstr(&newev, NULL, 0));
+				debug_print(2, "(cl) incoming event: %s",
+					arcan_shmif_eventstr(&newev, NULL, 0));
 /* FIXME: special consideration for subsegment channels */
 				if (arcan_shmif_descrevent(&newev)){
-					trace("(cl) ignoring descripting passing event");
+					debug_print(1, "(cl) ignoring descripting passing event");
 				}
 				else
 					a12_channel_enqueue(ast, &newev);
@@ -432,9 +424,12 @@ static int run_shmif_test(uint8_t* authk, size_t auth_sz, bool sp)
 
 static int show_usage(const char* n, const char* msg)
 {
-	fprintf(stderr, "%s\nUsage:\n\t%s client mode: arcan-net [-k authkfile(0<n<64b)] -c"
-	"\n\t%s server mode: arcan-net [-k authfile(0<n<64b)] -s connpoint\n"
-	"\t%s testing mode: arcan-net [-k authfile(0<n<64b)] -t(server main) or -T (client main)\n", msg, n, n, n);
+	fprintf(stderr, "%s\nUsage:\n\t%s client mode: arcan-net -c"
+	"\n\t%s server mode: arcan-net -s connpoint\n"
+	"\t%s testing mode: arcan-net -t(server main) or -T (client main)"
+	"\nshared:"
+	"\n\t -k keyfile: authkey], use authentication key from [authkey]"
+	"\n\t -v method], force video compression (rgba, rgb, rgb565, dpng)\n", msg, n, n, n);
 	return EXIT_FAILURE;
 }
 
@@ -459,6 +454,19 @@ int main(int argc, char** argv)
 				authk_sz = fread(authk, 1, 64, fpek);
 				fclose(fpek);
 			}
+		}
+		else if (strcmp(argv[i], "-v") == 0){
+			i++;
+			if (i == argc)
+				return show_usage(argv[i], "no method specified");
+			if (strcmp(argv[i], "rgb") == 0)
+				vframe_method = VFRAME_METHOD_RAW_NOALPHA;
+			else if (strcmp(argv[i], "rgb565") == 0)
+				vframe_method = VFRAME_METHOD_RAW_RGB565;
+			else if (strcmp(argv[i], "dpng") == 0)
+				vframe_method = VFRAME_METHOD_DPNG;
+			else
+				return show_usage(argv[i], "unknown video compression method requested");
 		}
 		else if (strcmp(argv[i], "-s") == 0){
 			i++;

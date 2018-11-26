@@ -226,15 +226,22 @@ needed to initiate a new channel as part of a subsegment setup.
 - [40..43] : expanded length: uint32
 - [44]     : commit: uint8
 
+The format field defines the encoding method applied. Current values are:
+ R8G8B8A8 = 0 : raw 8-bit red, green, blue and alpha values
+ R8G8B8 = 1 : raw 8-bit red, green and blue values
+ RGB565 = 2 : raw 5 bit red, 6 bit green, 5 bit red
+ DMINIZ = 3 : DEFLATE packaged block, set as ^ delta from last
+ MINIZ =  4 : DEFLATE packaged block
+
 This defines a new video stream frame. The length- field covers how many bytes
 that need to be buffered for the data to be decoded. This can be chunked up
-into 1..n packages, depending on interleaving and so on. The vstream counter
-increases incrementally and is shared between the v/a/b streams.
+into 1..n packages, depending on interleaving and so on.
 
-Outw/Outh can change frequently (corresponds to window resize).
+Commit indicates if this is the final (1) update before the accumulation
+buffer can be forwarded without tearing, or if there are more blocks to come.
 
-If there is already an active frame, it will be cancelled out and replaced
-with this one - similar to if a stream-cancel command had been issued.
+The length field indicates the number of total bytes for all the payloads
+in subsequent vstream-data packets.
 
 ### command - 8, define astream
 incomplete
