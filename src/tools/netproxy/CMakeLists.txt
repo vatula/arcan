@@ -62,6 +62,8 @@ set(SOURCES
 	blake2bp-ref.c
 	blake2b-ref.c
 	a12.c
+	a12_decode.c
+	a12_encode.c
 	miniz/miniz.c
 )
 

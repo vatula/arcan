@@ -13,7 +13,10 @@
 #include "pack.h"
 
 #include "miniz/miniz.h"
+
+#ifdef WANT_X264
 #include <x264.h>
+#endif
 
 #define MAC_BLOCK_SZ 16
 #define CONTROL_PACKET_SIZE 128
@@ -129,11 +132,13 @@ struct a12_state {
 		struct shmifsrv_vbuffer acc;
 		union {
 			uint8_t* compression;
+#ifdef WANT_X264
 			struct {
 				x264_t* encoder;
 				x264_picture_t pict_in, pict_out;
 			} x264;
-		};
+#endif
+	};
 	} channels[256];
 	int in_channel;
 
