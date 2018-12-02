@@ -66,7 +66,7 @@ Milestone 1 - basic features (0.5.x)
 	-  [ ] Output segments
 - [ ] Uncompressed Audio / Audio delta
 - [x] Compressed Video
-	-  [ ] NVencdec / VDPAU encdec
+	-  [ ] x264
 	-  [x] xor-PNG
 - [ ] Raw binary descriptor transfers
 - [ ] Subsegments
@@ -93,6 +93,7 @@ Milestone 3 - big stretch (0.6.x)
 - [ ] Local discovery Mechanism
 - [ ] Merge into arcan-net
 - [ ] Special provisions for agp/alt channels
+- [ ] Clean-up, RFC level documentation
 
 # Security/Safety
 
@@ -106,11 +107,35 @@ good choice. This key is used for building individual packet MACs.
 
 ALL DATA IS BEING SENT IN PLAINTEXT, ANYONE ON THE NETWORK CAN SEE WHAT YOU DO.
 
+# Hacking
+To get a grasp of the codebase, the major components to understand is on
+the server side the "a12\_channel\_unpack" function. This function takes
+care of buffering, authentication, decryption and dispatch. It is stateful,
+and based on the current state it will forward a completed larger chunk
+to the corresponding process_(xxx) function.
+
+For sending/prividing output, first build the appropriate control packet
+for the basic command. When such a buffer is finished, send to the
+"a12int\_append\_out" function.
+
+    uint8_t hdr_buf[CONTROL_PACKET_SIZE];
+    /* populate hdr_buf, see a12int_vframehdr_build */
+    a12int_append_out(S, STATE_CONTROL_PACKET, hdr_buf, CONTROL_PACKET_SIZE, NULL, 0);
+
+Continue in a similar way with any subpacket types, make sure to chunk output
+in reasonably sized chunks so that interleaving of other packet types is
+possible. This is needed in order to prevent audio / video from stuttering or
+saturating other events.
+
+"a12\_channel\_vframe" is probably the best example of providing output and
+sending, since it needs to treat many options, large data and different
+encoding schemes.
+
 # Protocol
 
-Two primary transports are intended, one tunneled through ssh and via the
-arcan-netpipe tool. The other is using UDT or a similar low-latency UDP
-transport.
+This section mostly covers a rough draft of things as they evolve, the real
+spec will be rewritten separately towards the end of the subproject as a
+'RFC-like' description with the a12 state machine mostly decoupled from shmif.
 
 Each arcan segment correlates to a 'channel' that can be multiplexed over
 one of these transports, with a sequence number used as a synchronization
@@ -126,21 +151,23 @@ from the last message.
 Each message has the outer structure of :
 
  |---------------------|
- |    16 byte MAC      |
- |---------------------|
- | 4 byte sequence     |-
- | 1 byte command code | - } encrypted block
- | command-code data   | -
- |---------------------|-
+ | 16 byte MAC         |
+ |---------------------|  |
+ | 4 byte sequence     |  |
+ | 1 byte command code |  | encrypted block
+ | command-code data   |  |
+ |---------------------|  |
+ | command- variable   |  |
 
 The payload is encrypt-then-MAC (if there has been a session key negotiated)
-The stream-cipher server-to-client starts at [8bIV,8bCTR(0)] and the
-client-to-server starts at [8bIV,8bCTR(1<<32)] with session rekey/rebuild.
+ or pre-set. The cipher is run in CTR mode where server-to-client starts at
+ [8bIV,8bCTR(0)] and the client-to-server starts at [8bIV,8bCTR(1<<32)] and
+ a possible rekey- command.
 
 After the MAC comes a 4 byte LSB unsigned sequence number, and then a 1 byte
-command code, then a number of command-specific bytes. The sequence number
-does not necessarily increment between messages as v/a/b streams might be
-multipart.
+command code, then a number of command-specific bytes. The sequence number does
+not necessarily increment between messages as v/a/b streams might be multipart.
+It is used as a reference for stream- invalidation commands.
 
 The different message types are:
 
@@ -175,7 +202,9 @@ drifting, show a user notice and destroy the channel.
 First message sent of the channel, it's rude not to say hi.
 
 ### command = 1, shutdown
-The nice way of saying that everything is about to be shut down.
+The nice way of saying that everything is about to be shut down, remaining
+bytes may contain the 'last words' - user presentable message describing the
+the reason for the shutdown.
 
 ### command = 2, encryption negotiation
 - K(auth) : uint8[16]
@@ -203,10 +232,13 @@ bstream, vstream and astreams.
 
 ### command = 5, channel negotiation
 - sequence number : uint64
+- primary : uint8
 - segkind : uint8
 
 This maps to subsegment requests and bootstraps the keys, rendezvous, etc.
-needed to initiate a new channel as part of a subsegment setup.
+needed to initiate a new channel. If 'primary' is set, the server side will
+treat the channel as a new 'client' connection, otherwise it is
+bootstrapped over the channel itself.
 
 ### command - 6, command failure
 - sequence number : uint64

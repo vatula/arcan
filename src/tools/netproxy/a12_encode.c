@@ -30,13 +30,19 @@ static void a12int_vframehdr_build(uint8_t buf[CONTROL_PACKET_SIZE],
 	uint16_t sw, uint16_t sh, uint16_t w, uint16_t h, uint16_t x, uint16_t y,
 	uint32_t len, uint32_t exp_len, bool commit)
 {
+	debug_print(2, "vframehdr: ch: %"PRIu8", type: %d, sid: %"PRIu32
+		" sw*sh: %"PRIu16"x%"PRIu16", w*h: %"PRIu16"x%"PRIu16" @ %"PRIu16
+		",%"PRIu16" on len: %"PRIu32" expand to %"PRIu32,
+		chid, type, sid, sw, sh, w, h, x, y, len, exp_len
+	);
+
 	memset(buf, '\0', CONTROL_PACKET_SIZE);
 	pack_u64(last_seen, &buf[0]);
 /* uint8_t entropy[8]; */
 	buf[16] = chid; /* [16] : channel-id */
 	buf[17] = COMMAND_VIDEOFRAME; /* [17] : command */
 	pack_u32(0, &buf[18]); /* [18..21] : stream-id */
-/* [22] : format - unused */
+	buf[22] = type; /* [22] : type */
 	pack_u16(sw, &buf[23]); /* [23..24] : surfacew */
 	pack_u16(sh, &buf[25]); /* [25..26] : surfaceh */
 	pack_u16(x, &buf[27]); /* [27..28] : startx */
@@ -130,8 +136,6 @@ void a12int_encode_rgb565(PACK_ARGS)
 				row_len = w;
 			}
 		}
-
-/* dispatch to out-queue(s) */
 		a12int_append_out(S, STATE_VIDEO_PACKET, outb, hdr_sz + bpb, NULL, 0);
 	}
 
@@ -301,7 +305,7 @@ void a12int_encode_rgb(PACK_ARGS)
 /* dispatch to out-queue(s) */
 			}
 
-			a12int_append_out(S, STATE_VIDEO_PACKET, outb, hdr_sz + bpb, NULL, 0);
+			a12int_append_out(S, STATE_VIDEO_PACKET, outb, hdr_sz + left, NULL, 0);
 		}
 	}
 
@@ -376,6 +380,7 @@ static struct compress_res compress_deltaz(struct a12_state* S, uint8_t ch,
  * and store ^ b. For smaller regions, we might want to do something simpler
  * like RLE only. The flags (,0) can be derived with the _zip helper */
 	else {
+		debug_print(2, "dpng, delta frame");
 		compress_in = S->channels[ch].compression;
 		uint8_t* acc = (uint8_t*) ab->buffer;
 		for (size_t cy = y; cy < y+h; cy++){
@@ -395,18 +400,19 @@ static struct compress_res compress_deltaz(struct a12_state* S, uint8_t ch,
 		type = POSTPROCESS_VIDEO_DMINIZ;
 	}
 
-/*
- * uncomment to debug
-	sprintf(fn, "%d.png", count++);
-	FILE* fpek = fopen(fn, "w");
-	void* buf = tdefl_write_image_to_png_file_in_memory(compress_in, w, h, 3, &out);
-	fwrite(buf, out, 1, fpek);
-	fclose(fpek);
-	free(buf);
-	}
- */
-
 	size_t out_sz;
+#ifdef LOG_FRAME_OUTPUT
+	static int count;
+	char fn[26];
+	snprintf(fn, 26, "deltaz_%d.png", count++);
+	FILE* fpek = fopen(fn, "w");
+	void* fbuf =
+		tdefl_write_image_to_png_file_in_memory(compress_in, w, h, 3, &out_sz);
+	fwrite(fbuf, out_sz, 1, fpek);
+	fclose(fpek);
+	free(fbuf);
+#endif
+
 	uint8_t* buf = tdefl_compress_mem_to_heap(
 			compress_in, compress_in_sz, &out_sz, 0);
 

@@ -67,7 +67,7 @@ static void step_sequence(struct a12_state* S, uint8_t* outb)
  * to not have the bandwidth hungry channels (i.e. video) consume everything.
  *
  * Another issue is that the raw vframes are big and ugly, and here is the
- * place where we performa an unavoidable copy unless we want interleaving
+ * place where we perform an unavoidable copy unless we want interleaving
  * (and then it becomes expensive to perform). Should be possible to set a
  * direct-to-drain descriptor here and do the write calls to the socket or
  * descriptor.
@@ -514,7 +514,6 @@ static void process_video(struct a12_state* S)
 	}
 
 	a12int_unpack_vbuffer(S, cvf, cont);
-
 	reset_state(S);
 }
 
