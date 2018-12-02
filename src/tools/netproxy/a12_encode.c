@@ -320,18 +320,21 @@ struct compress_res {
 };
 
 static struct compress_res compress_deltaz(struct a12_state* S, uint8_t ch,
-	struct shmifsrv_vbuffer* vb, size_t x, size_t y, size_t w, size_t h)
+	struct shmifsrv_vbuffer* vb, size_t* x, size_t* y, size_t* w, size_t* h)
 {
 	int type;
 	uint8_t* compress_in;
 	size_t compress_in_sz = 0;
 	struct shmifsrv_vbuffer* ab = &S->channels[ch].acc;
+	static int count = 0;
 
 /* reset the accumulation buffer so that we rebuild the normal frame */
-	if (ab->w != vb->w || ab->h != vb->h){
+	if (ab->w != vb->w || ab->h != vb->h || count++ > 5){
 		free(ab->buffer);
 		free(S->channels[ch].compression);
 		ab->buffer = NULL;
+		S->channels[ch].compression = NULL;
+		count = 0;
 	}
 
 /* first or reset run, build accumulation buffer and copy */
@@ -340,11 +343,11 @@ static struct compress_res compress_deltaz(struct a12_state* S, uint8_t ch,
 		*ab = *vb;
 		size_t nb = vb->w * vb->h * 3;
 		ab->buffer = malloc(nb);
-		w = vb->w;
-		h = vb->h;
-		x = 0;
-		y = 0;
-		debug_print(1, "dpng, switch to I frame (%zu, %zu)", w, h);
+		*w = vb->w;
+		*h = vb->h;
+		*x = 0;
+		*y = 0;
+		debug_print(1, "dpng, switch to I frame (%zu, %zu)", *w, *h);
 
 		if (!ab->buffer)
 			return (struct compress_res){};
@@ -383,10 +386,10 @@ static struct compress_res compress_deltaz(struct a12_state* S, uint8_t ch,
 		debug_print(2, "dpng, delta frame");
 		compress_in = S->channels[ch].compression;
 		uint8_t* acc = (uint8_t*) ab->buffer;
-		for (size_t cy = y; cy < y+h; cy++){
-			size_t rs = (cy * ab->w + x) * 3;
+		for (size_t cy = (*y); cy < (*y)+(*h); cy++){
+			size_t rs = (cy * ab->w + (*x)) * 3;
 
-			for (size_t cx = x; cx < x+w; cx++){
+			for (size_t cx = *x; cx < (*x)+(*w); cx++){
 				uint8_t r, g, b, ign;
 				shmif_pixel px = vb->buffer[cy * vb->pitch + cx];
 				SHMIF_RGBA_DECOMP(px, &r, &g, &b, &ign);
@@ -407,7 +410,7 @@ static struct compress_res compress_deltaz(struct a12_state* S, uint8_t ch,
 	snprintf(fn, 26, "deltaz_%d.png", count++);
 	FILE* fpek = fopen(fn, "w");
 	void* fbuf =
-		tdefl_write_image_to_png_file_in_memory(compress_in, w, h, 3, &out_sz);
+		tdefl_write_image_to_png_file_in_memory(compress_in, *w, *h, 3, &out_sz);
 	fwrite(fbuf, out_sz, 1, fpek);
 	fclose(fpek);
 	free(fbuf);
@@ -426,7 +429,7 @@ static struct compress_res compress_deltaz(struct a12_state* S, uint8_t ch,
 
 void a12int_encode_dpng(PACK_ARGS)
 {
-	struct compress_res cres = compress_deltaz(S, chid, vb, x, y, w, h);
+	struct compress_res cres = compress_deltaz(S, chid, vb, &x, &y, &w, &h);
 	if (!cres.ok)
 		return;
 

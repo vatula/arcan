@@ -56,7 +56,7 @@ static int video_miniz(const void* buf, int len, void* user)
 			cont->vidp[cvf->out_pos++] ^=
 				SHMIF_RGBA(cvf->pxbuf[0], cvf->pxbuf[1], cvf->pxbuf[2], 0xff);
 		else
-			cont->vidp[cvf->out_pos++] ^=
+			cont->vidp[cvf->out_pos++] =
 				SHMIF_RGBA(cvf->pxbuf[0], cvf->pxbuf[1], cvf->pxbuf[2], 0xff);
 
 /* which can happen on a row boundary */
@@ -76,7 +76,7 @@ static int video_miniz(const void* buf, int len, void* user)
 			cont->vidp[cvf->out_pos++] ^=
 				SHMIF_RGBA(inbuf[i], inbuf[i+1], inbuf[i+2], 0xff);
 		else
-			cont->vidp[cvf->out_pos++] ^=
+			cont->vidp[cvf->out_pos++] =
 				SHMIF_RGBA(inbuf[i], inbuf[i+1], inbuf[i+2], 0xff);
 
 			cvf->row_left--;
