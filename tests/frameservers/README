@@ -7,6 +7,8 @@ complex/ tries to previde an exhaustive test case for all complex
 
 counter/ provides a simple color cycle in a predictable pattern
 
+resizor/ switches color on each displayhint that triggers a resize
+
 counter-ndt/ uses a known color cycle and multi-buffering to test
  how arcan selects buffers in multi-buffer mode
 
